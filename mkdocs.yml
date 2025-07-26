@@ -1,0 +1,12 @@
+site_name: matrix-python-sdk
+site_description: Python SDK for Matrix Hub
+site_author: agent-matrix
+theme:
+  name: material
+nav:
+  - Home: index.md
+  - Installation: install.md
+  - Usage: usage.md
+  - Reference: reference.md
+plugins:
+  - search
