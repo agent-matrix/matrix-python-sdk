@@ -5,17 +5,16 @@
 [![CI Status](https://github.com/agent-matrix/matrix-python-sdk/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/agent-matrix/matrix-python-sdk/actions/workflows/ci.yml)
 [![License](https://img.shields.io/pypi/l/matrix-python-sdk.svg)](https://github.com/agent-matrix/matrix-python-sdk/blob/master/LICENSE)
 
-
 The **matrix-python-sdk** is the official Python Software Development Kit (SDK) for the [Matrix Hub](https://github.com/agent-matrix/matrix-hub) API. It provides a high-level, programmatic interface for interacting with the Matrix Hub, designed for developers and enterprises building solutions within the Matrix ecosystem.
 
 ### Key Features
 
-  * **Catalog Management**: Search and retrieve detailed information about agents, tools, and other catalog entities.
-  * **Package Installation**: Programmatically install agents, tools, and MCP servers with dependency resolution.
-  * **Remote & Ingestion Control**: Manage catalog remotes and trigger data ingestion processes.
-  * **Bulk Operations**: A lightweight micro-framework for registering millions of MCP servers concurrently.
+* **Catalog Management**: Search and retrieve detailed information about agents, tools, and other catalog entities.
+* **Package Installation**: Programmatically install agents, tools, and MCP servers with dependency resolution.
+* **Remote & Ingestion Control**: Manage catalog remotes and trigger data ingestion processes.
+* **Bulk Operations**: A lightweight micro-framework for registering millions of MCP servers concurrently.
 
------
+---
 
 ## Installation
 
@@ -23,7 +22,7 @@ To install the library, run the following command:
 
 ```bash
 pip install matrix-python-sdk
-```
+````
 
 ### Requirements
 
@@ -45,7 +44,7 @@ The following example demonstrates how to initialize the client and perform a ba
 ```python
 from matrix_sdk.client import MatrixClient
 from matrix_sdk.cache import Cache
-from matrix_sdk.types import SearchResponse
+from matrix_sdk.schemas import SearchResponse
 
 # 1. (Optional) Initialize a local cache to improve performance for repeated requests.
 #    The TTL (Time To Live) is set in seconds.
@@ -85,8 +84,8 @@ for item in resp.items:
 
 The `matrix_sdk.client.MatrixClient` is the primary interface for interacting with the Matrix Hub API.
 
-| Method                    | Description                                                      | Returns          |
-| :------------------------ | :--------------------------------------------------------------- | :--------------- |
+| Method                      | Description                                                      | Returns          |
+| :-------------------------- | :--------------------------------------------------------------- | :--------------- |
 | **`.search(...)`** | Performs a full-text and filtered search of the catalog.         | `SearchResponse` |
 | **`.get_entity(id)`** | Retrieves the full manifest and metadata for a given entity UID. | `EntityDetail`   |
 | **`.install(id, target, …)`** | Executes an installation plan (e.g., `pip`, `docker`, adapters). | `InstallOutcome` |
@@ -103,7 +102,7 @@ The `matrix_sdk.cache.Cache` is an optional component for caching API responses 
       * `.get(key, allow_expired=False)` → `CachedResponse | None`
       * `.set(key, response, etag=None)` → `None`
 
-### Data Types (`matrix_sdk.types`)
+### Data Types (`matrix_sdk.schemas`)
 
 The SDK uses Pydantic models for structured, type-hinted data in API requests and responses. Key models include:
 
@@ -149,28 +148,27 @@ To contribute to development or run tests locally, first set up the environment.
 
 ```bash
 # Install development dependencies
-pip install "matrix-python-sdk[dev]"
+make install
 ```
 
 ### Running Tests
 
-Execute the test suite using `pytest`:
+Execute the test suite using the `Makefile`:
 
 ```bash
-pytest
+make test
 ```
 
 ### Code Style & Linting
 
-We use `ruff` for linting and formatting.
+We use `ruff` and `black` for linting and formatting, which can be run easily via the `Makefile`.
 
 ```bash
-# Check for issues
-ruff check .
+# Check for code style issues
+make lint
 
-# Automatically fix issues
-ruff format .
-ruff check . --fix
+# Automatically format all code
+make fmt
 ```
 
 Continuous Integration (CI) is configured via GitHub Actions. See the workflow file at `.github/workflows/ci.yml`.
