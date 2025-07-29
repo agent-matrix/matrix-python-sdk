@@ -20,18 +20,19 @@ Notes:
 - You can safely delete the cache directory at any time.
 """
 from __future__ import annotations
+
 import hashlib
 import json
 import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional
 from urllib.parse import urlencode
-
 
 DEFAULT_CACHE_DIR = Path(os.path.expanduser("~/.cache/matrix"))
 DEFAULT_TTL_SECONDS = 4 * 60 * 60  # 4 hours
+
 
 @dataclass
 class CachedResponse:
@@ -42,6 +43,7 @@ class CachedResponse:
     def is_fresh(self, ttl_seconds: int) -> bool:
         return (time.time() - float(self.timestamp)) < float(ttl_seconds)
 
+
 class Cache:
     """
     File-based cache for small JSON payloads.
@@ -50,10 +52,12 @@ class Cache:
         cache = Cache()
         key = make_cache_key("http://host/catalog/search", {"q": "pdf"})
         entry = cache.get(key, allow_expired=True)
-        cache.set(key, {"items": [], "total": 0}, etag="W/\"abc\"")
+        cache.set(key, {"items": [], "total": 0}, etag='W/"abc"')
     """
 
-    def __init__(self, cache_dir: Path | str = DEFAULT_CACHE_DIR, ttl: int = DEFAULT_TTL_SECONDS) -> None:
+    def __init__(
+        self, cache_dir: Path | str = DEFAULT_CACHE_DIR, ttl: int = DEFAULT_TTL_SECONDS
+    ) -> None:
         self.cache_dir = Path(cache_dir)
         self.ttl = int(ttl)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -66,7 +70,8 @@ class Cache:
 
         Args:
             key: cache key (e.g., from make_cache_key)
-            allow_expired: if True, return entry even if TTL has elapsed (useful to get ETag for conditional requests)
+            allow_expired: If True, return an entry even if its TTL has
+                           elapsed (useful for ETag reuse).
 
         Returns:
             CachedResponse or None if not found / invalid.
@@ -76,16 +81,18 @@ class Cache:
             return None
         try:
             data = json.loads(fpath.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                raise TypeError("Cached data is not a dictionary")
             entry = CachedResponse(
                 payload=data.get("payload"),
                 etag=data.get("etag"),
                 timestamp=float(data.get("ts") or 0.0),
             )
-        except Exception:
+        except (json.JSONDecodeError, TypeError, KeyError):
             # Corrupt file — remove and ignore
             try:
                 fpath.unlink()
-            except Exception:
+            except OSError:
                 pass
             return None
 
@@ -101,13 +108,16 @@ class Cache:
         tmp = fpath.with_suffix(".tmp")
         payload = {"ts": time.time(), "etag": etag, "payload": response}
         try:
-            tmp.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+            tmp.write_text(
+                json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+                encoding="utf-8",
+            )
             tmp.replace(fpath)
         finally:
             try:
                 if tmp.exists():
                     tmp.unlink()
-            except Exception:
+            except OSError:
                 pass
 
     # ------------------------------- Internals -------------------------------- #
@@ -116,6 +126,7 @@ class Cache:
         # Hash the key to avoid long filenames and sanitize
         h = hashlib.sha256(key.encode("utf-8")).hexdigest()
         return self.cache_dir / f"{h}.json"
+
 
 def _normalize_params(params: Dict[str, Any]) -> str:
     """
@@ -132,6 +143,7 @@ def _normalize_params(params: Dict[str, Any]) -> str:
         norm_items.append((k, v_str))
     norm_items.sort(key=lambda kv: kv[0])
     return urlencode(norm_items)
+
 
 def make_cache_key(url: str, params: Dict[str, Any]) -> str:
     """

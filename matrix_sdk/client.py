@@ -16,49 +16,55 @@ Optional ETag/TTL caching:
   cached item if still within TTL.
 
 Return types:
-- If `matrix_sdk.types` is available, responses will be parsed into Pydantic
+- If `matrix_sdk.schemas` is available, responses will be parsed into Pydantic
   models (SearchResponse, EntityDetail, InstallOutcome). Otherwise, `dict`.
 """
 from __future__ import annotations
+
 import json
-import os
-from typing import Any, Dict, Iterable, Optional, Tuple, Type, TypeVar, Union
-from urllib.parse import urlencode, quote
+from typing import Any, Dict, Iterable, Optional, Type, TypeVar, Union
+from urllib.parse import quote, urlencode
+
 import httpx
+
 try:
     # Optional typed models (recommended)
-    from .types import SearchResponse, EntityDetail, InstallOutcome # Renamed to avoid conflict
+    from .schemas import (
+        EntityDetail,
+        InstallOutcome,
+        MatrixAPIError,
+        SearchResponse,
+    )
+
     _HAS_TYPES = True
-except Exception: # pragma: no cover
+except Exception:  # pragma: no cover
     SearchResponse = EntityDetail = Dict[str, Any]  # type: ignore
-    InstallOutcome = Dict[str, Any] # type: ignore
+    InstallOutcome = Dict[str, Any]  # type: ignore
+    MatrixAPIError = RuntimeError  # type: ignore
     _HAS_TYPES = False
 try:
     # Optional cache (recommended)
     from .cache import Cache, make_cache_key  # type: ignore
-except Exception: # pragma: no cover
+except Exception:  # pragma: no cover
     Cache = None  # type: ignore
-    def make_cache_key(url: str, params: Dict[str, Any]) -> str: # type: ignore
+
+    def make_cache_key(url: str, params: Dict[str, Any]) -> str:  # type: ignore
         # Minimal fallback; not persisted
-        return url + "?" + urlencode(sorted((k, str(v)) for k, v in (params or {}).items()))
+        return (
+            url
+            + "?"
+            + urlencode(sorted((k, str(v)) for k, v in (params or {}).items()))
+        )
+
 
 __all__ = [
     "MatrixClient",
-    "MatrixAPIError",
 ]
-class MatrixAPIError(RuntimeError):
-    """Raised for non-2xx responses and low-level HTTP errors."""
-
-    def __init__(self, message: str, *, status_code: Optional[int] = None, body: Any = None) -> None:
-        super().__init__(message)
-        self.status_code = status_code
-        self.body = body
-
-    def __repr__(self) -> str: # pragma: no cover - repr is trivial
-        return f"MatrixAPIError(status_code={self.status_code}, message={self.args[0]!r})"
 
 
 T = TypeVar("T")
+
+
 class MatrixClient:
     """
     Thin sync client around httpx for Matrix Hub.
@@ -86,16 +92,15 @@ class MatrixClient:
 
         self._headers: Dict[str, str] = {
             "Accept": "application/json",
-            "User-Agent": user_agent or f"matrix-python-sdk/0.1 (+python-httpx)",
+            "User-Agent": user_agent or "matrix-python-sdk/0.1 (+python-httpx)",
         }
         if token:
             self._headers["Authorization"] = f"Bearer {token}"
 
-    # --------------------------------------------------------------------- #
-    # Public API                                                            #
-    --------------------------------------------------------------------- #
-
-    def search(self, *, q: str, type: Optional[str] = None, **filters: Any) -> Union[SearchResponse, Dict[str, Any]]:
+    # Public API
+    def search(
+        self, *, q: str, type: Optional[str] = None, **filters: Any
+    ) -> Union[SearchResponse, Dict[str, Any]]:
         """
         Perform a catalog search.
 
@@ -120,14 +125,17 @@ class MatrixClient:
         cache_key = make_cache_key(url, params)
         cached_entry = None
         if self.cache:
-            cached_entry = self.cache.get(cache_key, allow_expired=True) # allow ETag reuse
+            cached_entry = self.cache.get(
+                cache_key, allow_expired=True
+            )  # allow ETag reuse
             if cached_entry and cached_entry.etag:
                 headers["If-None-Match"] = cached_entry.etag
 
         try:
             resp = self._request("GET", path, params=params, headers=headers)
             if resp.status_code == 304 and cached_entry and self.cache:
-                # Not modified — serve cached payload even if TTL expired (server guarantees unchanged)
+                # Not modified — serve cached payload even if TTL expired
+                # (server guarantees it's unchanged).
                 return self._parse(SearchResponse, cached_entry.payload)
             data = self._safe_json(resp)
             # Save to cache with new ETag (if present)
@@ -152,7 +160,9 @@ class MatrixClient:
         resp = self._request("GET", f"/catalog/entities/{enc}")
         return self._parse(EntityDetail, self._safe_json(resp))
 
-    def install(self, id: str, target: str, version: Optional[str] = None) -> Union[InstallOutcome, Dict[str, Any]]:
+    def install(
+        self, id: str, target: str, version: Optional[str] = None
+    ) -> Union[InstallOutcome, Dict[str, Any]]:
         """
         Execute install plan for an entity.
         """
@@ -168,8 +178,7 @@ class MatrixClient:
         resp = self._request("POST", "/catalog/install", json_body=body)
         return self._parse(InstallOutcome, self._safe_json(resp))
 
-    # ---- Optional remotes management ------------------------------------ #
-
+    # Optional remotes management
     def list_remotes(self) -> Dict[str, Any]:
         """
         List configured catalog remotes.
@@ -177,7 +186,13 @@ class MatrixClient:
         resp = self._request("GET", "/catalog/remotes")
         return self._safe_json(resp)
 
-    def add_remote(self, url: str, *, name: Optional[str] = None, trust_policy: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def add_remote(
+        self,
+        url: str,
+        *,
+        name: Optional[str] = None,
+        trust_policy: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         """
         Add a new catalog remote by URL (usually an index.json).
 
@@ -204,10 +219,7 @@ class MatrixClient:
         resp = self._request("POST", "/catalog/ingest", params={"remote": name})
         return self._safe_json(resp)
 
-    # --------------------------------------------------------------------- #
-    # Internals                                                             #
-    # --------------------------------------------------------------------- #
-
+    # Internals
     def _request(
         self,
         method: str,
@@ -257,10 +269,10 @@ class MatrixClient:
         """
         Attempt to parse with Pydantic model if available; otherwise return raw dict.
         """
-        if not _HAS_TYPES:
-            return data
-        try:
-            return model_cls.model_validate(data) # type: ignore[attr-defined]
-        except Exception:
-            # Fall back to raw if validation fails
-            return data
+        if _HAS_TYPES and hasattr(model_cls, "model_validate"):
+            try:
+                return model_cls.model_validate(data)  # type: ignore [union-attr]
+            except Exception:
+                # Fall back to raw if validation fails
+                return data
+        return data

@@ -8,8 +8,13 @@ BUILD_DIR   := dist
 SRC_DIR     := matrix_sdk
 TEST_DIR    := tests
 DOCS_DIR    := docs
-MKDOCS      := mkdocs
 CACHE_DIR   := ~/.cache/matrix-sdk
+
+# Conditionally include directories that exist for linting/formatting
+PY_TARGETS := $(SRC_DIR)
+ifneq ("$(wildcard $(TEST_DIR))","")
+    PY_TARGETS += $(TEST_DIR)
+endif
 
 .DEFAULT_GOAL := help
 
@@ -21,8 +26,8 @@ help:
 	@echo ""
 	@echo "Primary targets:"
 	@echo "  install       Install runtime + dev dependencies"
-	@echo "  lint          Run ruff + flake8"
-	@echo "  fmt           Run black"
+	@echo "  lint          Run ruff to check for issues"
+	@echo "  fmt           Auto-format code with black and ruff"
 	@echo "  typecheck     Run mypy"
 	@echo "  test          Run pytest"
 	@echo "  build         Build sdist & wheel"
@@ -43,53 +48,53 @@ help:
 install:
 	@echo "Installing dependencies…"
 	$(PIP) install --upgrade pip
-	$(PIP) install -r requirements.txt
-	$(PIP) install -r requirements-dev.txt
+	$(PIP) install -e ".[dev]"
 
 # ---------------------------------------------------------------------------
 # Linting & Formatting
 # ---------------------------------------------------------------------------
 lint:
-	@echo "Running linter (ruff + flake8)…"
-	ruff check $(SRC_DIR) $(TEST_DIR)
-	flake8 $(SRC_DIR) $(TEST_DIR)
+	@echo "Running linter (ruff)…"
+	$(PYTHON) -m ruff check $(PY_TARGETS)
 
 fmt:
 	@echo "Formatting code with black…"
-	black $(SRC_DIR) .github workflows mkdocs.yml
+	$(PYTHON) -m black $(PY_TARGETS) $(wildcard .github)
+	@echo "Fixing imports and other issues with ruff…"
+	$(PYTHON) -m ruff check --fix $(PY_TARGETS)
 
 typecheck:
 	@echo "Running mypy…"
-	mypy $(SRC_DIR)
+	$(PYTHON) -m mypy $(SRC_DIR)
 
 # ---------------------------------------------------------------------------
 # Testing
 # ---------------------------------------------------------------------------
 test:
 	@echo "Running pytest…"
-	pytest -q --disable-warnings --maxfail=1
+	$(PYTHON) -m pytest -q --disable-warnings --maxfail=1
 
 # ---------------------------------------------------------------------------
 # Build & Publish
 # ---------------------------------------------------------------------------
-build:
+build: clean
 	@echo "Building source & wheel…"
 	$(PYTHON) -m build --sdist --wheel
 
 publish: build
 	@echo "Publishing to PyPI…"
-	twine upload $(BUILD_DIR)/*
+	$(PYTHON) -m twine upload $(BUILD_DIR)/*
 
 # ---------------------------------------------------------------------------
 # Documentation (MkDocs)
 # ---------------------------------------------------------------------------
 docs-serve:
 	@echo "Launching MkDocs dev server…"
-	$(MKDOCS) serve
+	$(PYTHON) -m mkdocs serve
 
 docs-build:
 	@echo "Building MkDocs static site…"
-	$(MKDOCS) build
+	$(PYTHON) -m mkdocs build
 
 docs-clean:
 	@echo "Cleaning MkDocs site/ directory…"

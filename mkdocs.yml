@@ -1,12 +1,16 @@
 site_name: matrix-python-sdk
-site_description: Python SDK for Matrix Hub
-site_author: agent-matrix
+repo_url: https://github.com/agent-matrix/matrix-python-sdk
 theme:
   name: material
+  features:
+    - navigation.tabs
+    - navigation.top
+    - search.suggest
 nav:
   - Home: index.md
   - Installation: install.md
-  - Usage: usage.md
-  - Reference: reference.md
-plugins:
-  - search
+  - Usage Examples: usage.md
+  - Bulk Registration: bulk.md
+  - API Reference: reference.md
+  - Configuration: config.md
+  - Contributing: contributing.md
