@@ -2,8 +2,8 @@
 
 [![PyPI Version](https://img.shields.io/pypi/v/matrix-python-sdk.svg)](https://pypi.org/project/matrix-python-sdk/)
 [![Python Versions](https://img.shields.io/pypi/pyversions/matrix-python-sdk.svg)](https://pypi.org/project/matrix-python-sdk/)
-[![CI Status](https://github.com/agent-matrix/matrix-python-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/agent-matrix/matrix-python-sdk/actions)
-[![License](https://img.shields.io/pypi/l/matrix-python-sdk.svg)](https://github.com/agent-matrix/matrix-python-sdk/blob/main/LICENSE)
+[![CI Status](https://github.com/agent-matrix/matrix-python-sdk/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/agent-matrix/matrix-python-sdk/actions/workflows/ci.yml)
+[![License](https://img.shields.io/pypi/l/matrix-python-sdk.svg)](https://github.com/agent-matrix/matrix-python-sdk/blob/master/LICENSE)
 
 
 The **matrix-python-sdk** is the official Python Software Development Kit (SDK) for the [Matrix Hub](https://github.com/agent-matrix/matrix-hub) API. It provides a high-level, programmatic interface for interacting with the Matrix Hub, designed for developers and enterprises building solutions within the Matrix ecosystem.
