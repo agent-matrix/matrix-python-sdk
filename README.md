@@ -1,19 +1,9 @@
 # Matrix Python SDK
 
-<p align="center">
-  <a href="https://pypi.org/project/matrix-python-sdk/">
-    <img alt="PyPI Version" src="https://img.shields.io/pypi/v/matrix-python-sdk.svg">
-  </a>
-  <a href="https://pypi.org/project/matrix-python-sdk/">
-    <img alt="Python Versions" src="https://img.shields.io/pypi/pyversions/matrix-python-sdk.svg">
-  </a>
-  <a href="https://github.com/agent-matrix/matrix-python-sdk/actions">
-    <img alt="CI Status" src="https://github.com/agent-matrix/matrix-python-sdk/actions/workflows/ci.yml/badge.svg">
-  </a>
-  <a href="https://github.com/agent-matrix/matrix-python-sdk/blob/main/LICENSE">
-    <img alt="License" src="https://img.shields.io/pypi/l/matrix-python-sdk.svg">
-  </a>
-</p>
+[![PyPI Version](https://img.shields.io/pypi/v/matrix-python-sdk.svg)](https://pypi.org/project/matrix-python-sdk/)
+[![Python Versions](https://img.shields.io/pypi/pyversions/matrix-python-sdk.svg)](https://pypi.org/project/matrix-python-sdk/)
+[![CI Status](https://github.com/agent-matrix/matrix-python-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/agent-matrix/matrix-python-sdk/actions)
+[![License](https://img.shields.io/pypi/l/matrix-python-sdk.svg)](https://github.com/agent-matrix/matrix-python-sdk/blob/main/LICENSE)
 
 
 The **matrix-python-sdk** is the official Python Software Development Kit (SDK) for the [Matrix Hub](https://github.com/agent-matrix/matrix-hub) API. It provides a high-level, programmatic interface for interacting with the Matrix Hub, designed for developers and enterprises building solutions within the Matrix ecosystem.
