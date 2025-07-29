@@ -1,7 +1,7 @@
 # Matrix Python SDK
 
 [![PyPI Version](https://img.shields.io/pypi/v/matrix-python-sdk.svg)](https://pypi.org/project/matrix-python-sdk/)
-[![Python Versions](https://img.shields.io/pypi/pyversions/matrix-python-sdk.svg)](https://pypi.org/project/matrix-python-sdk/)
+[![Python 3.11+](https://img.shields.io/pypi/pyversions/matrix-python-sdk.svg)](https://pypi.org/project/matrix-python-sdk/)
 [![CI Status](https://github.com/agent-matrix/matrix-python-sdk/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/agent-matrix/matrix-python-sdk/actions/workflows/ci.yml)
 [![License](https://img.shields.io/pypi/l/matrix-python-sdk.svg)](https://github.com/agent-matrix/matrix-python-sdk/blob/master/LICENSE)
 
