@@ -181,13 +181,13 @@ Continuous Integration (CI) is configured via GitHub Actions. See the workflow f
 
 This project is licensed under the **Apache 2.0 License**.
 
-© Agent Matrix — [LICENSE](https://github.com/agent-matrix/matrix-python-sdk/blob/main/LICENSE)
+© Agent Matrix — [LICENSE](LICENSE)
 
 -----
 
 ## Contributing
 
-We welcome contributions from the community. Please read our [**CONTRIBUTING.md**](https://github.com/agent-matrix/matrix-python-sdk/blob/main/CONTRIBUTING.md) for guidelines on how to submit issues, feature requests, and pull requests.
+We welcome contributions from the community. Please read our [**CONTRIBUTING.md**](CONTRIBUTING.md) for guidelines on how to submit issues, feature requests, and pull requests.
 
 -----
 
