@@ -14,18 +14,14 @@ We follow the [Contributor Covenant](https://www.contributor-covenant.org/).
 
 ## Dev setup
 
-- Install pre-commit hooks:  
-  ```bash
-  pre-commit install
-````
+- Install pre-commit hooks:
+  
+```bash
+pre-commit install
+```
 
 * Run tests:
 
-  ```bash
-  pytest
-  ```
-
-
-
-
-
+```bash
+pytest
+```
