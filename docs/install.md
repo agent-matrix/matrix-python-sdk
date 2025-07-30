@@ -4,7 +4,7 @@
 
 ```bash
 pip install matrix-python-sdk
-````
+```
 
 > Requires Python 3.11+.
 
