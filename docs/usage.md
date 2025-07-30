@@ -1,135 +1,113 @@
 # Usage Examples
 
-This document provides practical examples for using the Matrix Python SDK.
+This guide shows two distinct workflows:
+
+1. **Catalog operations** against the Matrix Hub (port 7300)  
+   – Use `MatrixClient` to search, install, and manage catalog remotes.  
+2. **Gateway registration** against the MCP Gateway Admin API (port 4444)  
+   – Use `BulkRegistrar` to bulk‑register MCP servers (e.g. from Git, ZIP, NDJSON).
 
 ---
 
-## Basic Client Workflow
+## 1. Catalog Operations (`MatrixClient`)
 
-This example shows a common workflow: initializing the client, searching for an agent, getting its details, and then installing it.
+> **When to use**: you want to discover or install agents/tools in your codebase, or manage which remote catalogs the Hub ingests.
 
 ```python
 from matrix_sdk.client import MatrixClient
-from matrix_sdk.schemas import SearchResponse, EntityDetail, InstallOutcome
 
-# Initialize the client, optionally with a cache for better performance
+# Initialize client for the Hub
 client = MatrixClient("http://localhost:7300", token="YOUR_TOKEN")
 
-# 1. Search for an agent
-print("--- Searching for agents... ---")
-search_resp: SearchResponse = client.search(q="summarize pdfs", type="agent", limit=5)
-
-if not search_resp.items:
+# — Search for agents in the catalog —
+resp = client.search(q="summarize pdfs", type="agent", limit=5)
+if not resp.items:
     print("No agents found.")
 else:
-    print(f"Found {search_resp.total} agents.")
-    for item in search_resp.items:
-        print(f"  - {item.id} | Summary: {item.summary}")
+    # Print basic info
+    for item in resp.items:
+        print(f"{item.id}: {item.summary}")
 
-    # 2. Get details for the first agent found
-    first_agent_id = search_resp.items[0].id
-    print(f"\n--- Getting details for {first_agent_id}... ---")
-    detail: EntityDetail = client.get_entity(first_agent_id)
-    print(f"  Name: {detail.name}")
-    print(f"  Description: {detail.description}")
-    print(f"  Capabilities: {detail.capabilities}")
+    # Inspect details of the first agent
+    first_id = resp.items[0].id
+    detail = client.get_entity(first_id)
+    print(detail.name, "-", detail.description)
 
-    # 3. Install the agent
-    print(f"\n--- Installing {first_agent_id}... ---")
-    outcome: InstallOutcome = client.install(id=first_agent_id, target="./my-app")
-    print(f"  Installation complete. Files written to ./my-app")
-    print(f"  Files: {outcome.files_written}")
-```
+    # Install into your project directory
+    outcome = client.install(id=first_id, target="./apps/pdf-bot")
+    print("Installed files:", outcome.files_written)
 
+# — Manage remote catalogs —  
+print("Remotes before:", client.list_remotes())
+client.add_remote("https://some-org.github.io/my-index.json", name="custom-org")
+client.trigger_ingest("custom-org")
+print("Triggered ingestion for 'custom-org'")
+````
 
-## Managing Catalog Remotes
+**Key points**
 
-You can programmatically list, add, and trigger ingestion for catalog remotes.
+* All methods are **synchronous**, wrap HTTP calls, and return typed Pydantic models.
+* Use for anything under `/catalog/*` (search, install, remotes, ingest).
 
-```python
-from matrix_sdk.client import MatrixClient
+---
 
-client = MatrixClient("http://localhost:7300", token="YOUR_TOKEN")
+## 2. Bulk MCP‑Server Registration (`BulkRegistrar`)
 
-# List currently configured remotes
-print("--- Listing remotes... ---")
-remotes = client.list_remotes()
-print("Current remotes:", remotes)
-
-# Add a new remote
-print("\n--- Adding a new remote... ---")
-client.add_remote("[https://some-org.github.io/my-index.json](https://some-org.github.io/my-index.json)", name="my-custom-org")
-print("Added remote 'my-custom-org'.")
-
-# Trigger ingestion for the new remote
-print("\n--- Triggering ingestion... ---")
-client.trigger_ingest("my-custom-org")
-print("Ingestion triggered for 'my-custom-org'.")
-```
-
-
-## Bulk Server Registration
-
-The `BulkRegistrar` is designed for efficiently registering a large number of MCP servers.
-
-### Example: Register from a Git Source
+> **When to use**: you have one or more MCP server manifests (Git repos, ZIPs, NDJSON lists) and need to register them **in bulk** with your Gateway.
 
 ```python
 import asyncio
 from matrix_sdk.bulk.bulk_registrar import BulkRegistrar
 
-# Define a source pointing to a Git repository containing a server manifest
-sources = [
-    {
-        "kind": "git",
-        "url": "[https://github.com/IBM/docling-mcp](https://github.com/IBM/docling-mcp)",
-        "ref": "main",
-        "probe": True  # Optionally probe the server for capabilities
-    }
-]
+# 1. Define your sources (e.g. Git repo containing server manifest)
+sources = [{
+    "kind": "git",
+    "url": "https://github.com/IBM/docling-mcp",
+    "ref": "main",
+    "probe": True   # optional: check server capabilities before registering
+}]
 
-# Initialize the registrar with the gateway URL and an admin token
+# 2. Initialize the registrar for the Gateway Admin API
 registrar = BulkRegistrar(
     gateway_url="http://localhost:4444",
     token="YOUR_ADMIN_TOKEN"
 )
 
-# Run the registration process
-print("--- Registering server from Git source... ---")
+# 3. Run bulk registration (async)
 results = asyncio.run(registrar.register_servers(sources))
 print("Registration results:", results)
 ```
 
-### Example: Register from an NDJSON File
-
-You can also load a list of sources from a newline-delimited JSON file (`.ndjson`).
+### Alternative: NDJSON file of sources
 
 ```python
-# sources.ndjson file content:
-# {"kind":"git", "url":"[https://github.com/some/repo.git](https://github.com/some/repo.git)", "ref":"main"}
-# {"kind":"git", "url":"[https://github.com/another/repo.git](https://github.com/another/repo.git)", "ref":"v1.2"}
-
-import asyncio
-import json
+import asyncio, json
 from matrix_sdk.bulk.bulk_registrar import BulkRegistrar
 
-# Load sources from the file
-try:
-    with open("sources.ndjson") as f:
-        sources = [json.loads(line) for line in f if line.strip()]
-except FileNotFoundError:
-    print("Error: sources.ndjson not found.")
-    sources = []
+# Load newline‑delimited JSON list of sources
+with open("sources.ndjson") as f:
+    sources = [json.loads(line) for line in f if line.strip()]
 
-if sources:
-    # Initialize the registrar
-    registrar = BulkRegistrar(
-        gateway_url="http://localhost:4444",
-        token="YOUR_ADMIN_TOKEN"
-    )
-
-    # Run the registration process
-    print("--- Registering servers from NDJSON file... ---")
-    results = asyncio.run(registrar.register_servers(sources))
-    print("Registration results:", results)
+registrar = BulkRegistrar("http://localhost:4444", token="YOUR_ADMIN_TOKEN")
+results = asyncio.run(registrar.register_servers(sources))
+print("Results:", results)
 ```
+
+**Key points**
+
+* Fully **asynchronous**, optimized for high‑throughput & retries.
+* Manifests can come from Git, ZIP, Docker, etc., and will be **upserted** into the Gateway.
+* **Does not** touch your local codebase or lockfiles—only talks to the Admin API under `/admin/servers`.
+
+---
+
+## Why two clients?
+
+* **`MatrixClient`** = Catalog & Install
+
+  * Manages **what** agents/tools are available and **pulls** their code into your projects.
+* **`BulkRegistrar`** = Gateway Registration
+
+  * Manages **where** those agents/tools run at runtime, registering them with the MCP‑Gateway.
+
+Their separation keeps each focused, but you can wrap both in your own façade if you prefer a single entrypoint.
