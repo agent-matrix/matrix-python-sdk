@@ -56,6 +56,6 @@ registrar = BulkRegistrar(
 import asyncio
 results = asyncio.run(registrar.register_servers(sources))
 print(results)
-````
+```
 
 See [Bulk Registration](bulk.md) for more.
