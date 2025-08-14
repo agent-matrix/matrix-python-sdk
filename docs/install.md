@@ -6,7 +6,7 @@
 pip install matrix-python-sdk
 ```
 
-> Requires Python 3.11+.
+> Requires Python 3.10+.
 
 ## From source
 
@@ -16,14 +16,14 @@ cd matrix-python-sdk
 pip install .
 ```
 
-## Upgrading
+## Upgrade
 
 ```bash
 pip install --upgrade matrix-python-sdk
 ```
 
-## Optional Dependencies
+## Optional extras
 
-* [pydantic](https://pydantic.dev/): For full type checking (required, auto-installed)
-* [typer](https://typer.tiangolo.com/): For CLI support (auto-installed)
-* [httpx](https://www.python-httpx.org/): Async HTTP client
+* `httpx` (installed): HTTP client used by the SDK.
+* `pydantic` (installed): typed models for responses.
+* `pyyaml` (optional): enables `fetch_manifest()` to parse YAML manifests.

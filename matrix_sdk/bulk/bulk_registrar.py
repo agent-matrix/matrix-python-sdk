@@ -1,28 +1,47 @@
 # matrix_sdk/bulk/bulk_registrar.py
-"""
-BulkRegistrar orchestrates discovery, optional probing, idempotency key generation,
-and upserts manifests to an MCP-Gateway Admin API with retry/backoff.
-"""
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 from typing import Any, Dict, Iterable, List, Optional, Union
 
+from pydantic import BaseModel
+
+from .gateway import GatewayAdminClient                # <-- fixed import
+from .models import ServerManifest                     # <-- fixed import
+from .discovery import discover_manifests_from_source  # matrix-first discovery
+try:
+    from .probe import probe_capabilities
+except Exception:
+    def probe_capabilities(manifest: Dict[str, Any]) -> Dict[str, Any]:
+        return manifest
 from .backoff import with_backoff
-from .discovery import discover_manifest
-from .gateway_client import GatewayAdminClient
-from .probe import probe_capabilities
-from .schemas import ServerManifest
 from .utils import make_idempotency_key
+
+_DEBUG = os.getenv("DEBUG", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _jsonable(obj: Union[ServerManifest, BaseModel, Dict[str, Any]]) -> Dict[str, Any]:
+    """Return a JSON-safe dict (AnyUrl→str) for any supported manifest-ish object."""
+    if isinstance(obj, ServerManifest):
+        return obj.to_jsonable()
+    if isinstance(obj, dict):
+        # ensure JSON-serializable scalars
+        return json.loads(json.dumps(obj, default=str))
+    # Pydantic v2 or v1 models
+    try:
+        return json.loads(obj.model_dump_json(by_alias=True, exclude_none=True))  # type: ignore[attr-defined]
+    except Exception:
+        return json.loads(obj.json(by_alias=True, exclude_none=True))             # type: ignore[attr-defined]
 
 
 class BulkRegistrar:
     """
-    BulkRegistrar handles bulk registration of MCP servers.
-
-    Usage:
-        registrar = BulkRegistrar(gateway_url, token, concurrency=50)
-        results = await registrar.register_servers(list_of_sources)
+    Discover manifests from sources (zip/dir/git) and register them with the gateway.
+    - matrix-first discovery: matrix/ (index.json, *.manifest.json), else pyproject.toml
+    - optional capability probing
+    - concurrent upserts with retries + idempotency
     """
 
     def __init__(
@@ -31,48 +50,74 @@ class BulkRegistrar:
         token: str,
         concurrency: int = 50,
         probe: bool = True,
-        backoff_config: Optional[dict[str, Union[int, float]]] = None,
+        backoff_config: Optional[dict] = None,
     ) -> None:
         self.client = GatewayAdminClient(gateway_url, token)
         self.sema = asyncio.Semaphore(concurrency)
         self.probe_enabled = probe
-        # prepare backoff decorator with provided config or defaults
         bc = backoff_config or {"max_retries": 5, "base_delay": 1.0, "jitter": 0.1}
         self._retry = with_backoff(
             max_retries=int(bc.get("max_retries", 5)),
-            base_delay=bc.get("base_delay", 1.0),
-            jitter=bc.get("jitter", 0.1),
+            base_delay=float(bc.get("base_delay", 1.0)),
+            jitter=float(bc.get("jitter", 0.1)),
         )
 
-    async def _process_one(self, source: Dict[str, Any]) -> Any:
-        """
-        Process a single source dict:
-          1. Discover manifest (zip, git, Dockerfile, etc.)
-          2. Optionally probe for extra capabilities
-          3. Generate idempotency key
-          4. Upsert via GatewayAdminClient with retry/backoff
-        """
-        async with self.sema:
-            # Step 1: discovery
-            manifest = discover_manifest(source)
-            # Step 2: optional probing
+    async def _register_manifest(self, payload: Dict[str, Any]) -> Any:
+        """Validate payload, compute idempotency key, then upsert with retry."""
+        # Validate into canonical schema to enforce shape
+        manifest = ServerManifest.model_validate(payload)
+        json_payload = manifest.to_jsonable()  # JSON-safe dict
+
+        idem_key = make_idempotency_key(json_payload)
+
+        if _DEBUG:
+            print("[DEBUG] Prepared payload:")
+            print(json.dumps(json_payload, indent=2))
+
+        upsert = self._retry(self.client.upsert_server)
+        return await upsert(json_payload, idempotency_key=idem_key)
+
+    async def _process_source(self, source: Dict[str, Any]) -> List[Any]:
+        """Discover 0..N manifests from a single source and upsert them."""
+        manifests = discover_manifests_from_source(source)
+        if not manifests:
+            return [{"warning": "no manifests discovered", "source": {k: v for k, v in source.items() if k != 'token'}}]
+
+        tasks: List["asyncio.Task[Any]"] = []
+        for m in manifests:
+            payload = m.to_jsonable()
             if self.probe_enabled and source.get("probe", True):
-                # probe expects raw dict, returns enriched manifest dict
-                enriched = probe_capabilities(manifest.model_dump())
-                manifest = ServerManifest(**enriched)
-            # Step 3: idempotency key
-            idem_key = make_idempotency_key(manifest.model_dump())
-            # Step 4: upsert with retry
-            upsert_fn = self._retry(self.client.upsert_server)
-            result = await upsert_fn(manifest, idempotency_key=idem_key)
-            return result
+                payload = probe_capabilities(payload)
+            tasks.append(asyncio.create_task(self._register_manifest(payload)))
+
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        # Normalize exceptions to printable dicts
+        fixed: List[Any] = []
+        for r in results:
+            if isinstance(r, Exception):
+                fixed.append({"error": str(r)})
+            else:
+                fixed.append(r)
+        return fixed
 
     async def register_servers(self, sources: Iterable[Dict[str, Any]]) -> List[Any]:
         """
-        Register multiple servers concurrently.
-
-        Returns list of results or exceptions for each source.
+        Process each source (zip/dir/git). Returns a flat list of results across all sources.
         """
-        tasks = [self._process_one(src) for src in sources]
-        # gather returns exceptions as results when return_exceptions=True
-        return await asyncio.gather(*tasks, return_exceptions=True)
+        tasks = []
+        for src in sources:
+            # Bound overall concurrency across sources
+            async def _worker(s: Dict[str, Any]) -> List[Any]:
+                async with self.sema:
+                    return await self._process_source(s)
+            tasks.append(asyncio.create_task(_worker(src)))
+
+        grouped = await asyncio.gather(*tasks, return_exceptions=True)
+
+        results: List[Any] = []
+        for g in grouped:
+            if isinstance(g, Exception):
+                results.append({"error": str(g)})
+            else:
+                results.extend(g)
+        return results

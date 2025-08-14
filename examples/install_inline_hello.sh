@@ -1,0 +1,1 @@
+python -m examples.install_inline_hello

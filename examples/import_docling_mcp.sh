@@ -1,0 +1,1 @@
+python -m examples.import_docling_mcp

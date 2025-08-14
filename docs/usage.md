@@ -1,113 +1,173 @@
-# Usage Examples
+```markdown
+# Usage
 
-This guide shows two distinct workflows:
-
-1. **Catalog operations** against the Matrix Hub (port 7300)  
-   – Use `MatrixClient` to search, install, and manage catalog remotes.  
-2. **Gateway registration** against the MCP Gateway Admin API (port 4444)  
-   – Use `BulkRegistrar` to bulk‑register MCP servers (e.g. from Git, ZIP, NDJSON).
+This guide covers common tasks using `MatrixClient` and (optionally) the bulk registrar for Gateways.
 
 ---
 
-## 1. Catalog Operations (`MatrixClient`)
-
-> **When to use**: you want to discover or install agents/tools in your codebase, or manage which remote catalogs the Hub ingests.
+## Top-5 Search
 
 ```python
-from matrix_sdk.client import MatrixClient
+from matrix_sdk import MatrixClient
 
-# Initialize client for the Hub
-client = MatrixClient("http://localhost:7300", token="YOUR_TOKEN")
+hub = MatrixClient(base_url="http://127.0.0.1:7300")
 
-# — Search for agents in the catalog —
-resp = client.search(q="summarize pdfs", type="agent", limit=5)
-if not resp.items:
-    print("No agents found.")
-else:
-    # Print basic info
-    for item in resp.items:
-        print(f"{item.id}: {item.summary}")
-
-    # Inspect details of the first agent
-    first_id = resp.items[0].id
-    detail = client.get_entity(first_id)
-    print(detail.name, "-", detail.description)
-
-    # Install into your project directory
-    outcome = client.install(id=first_id, target="./apps/pdf-bot")
-    print("Installed files:", outcome.files_written)
-
-# — Manage remote catalogs —  
-print("Remotes before:", client.list_remotes())
-client.add_remote("https://some-org.github.io/my-index.json", name="custom-org")
-client.trigger_ingest("custom-org")
-print("Triggered ingestion for 'custom-org'")
-````
-
-**Key points**
-
-* All methods are **synchronous**, wrap HTTP calls, and return typed Pydantic models.
-* Use for anything under `/catalog/*` (search, install, remotes, ingest).
-
----
-
-## 2. Bulk MCP‑Server Registration (`BulkRegistrar`)
-
-> **When to use**: you have one or more MCP server manifests (Git repos, ZIPs, NDJSON lists) and need to register them **in bulk** with your Gateway.
-
-```python
-import asyncio
-from matrix_sdk.bulk.bulk_registrar import BulkRegistrar
-
-# 1. Define your sources (e.g. Git repo containing server manifest)
-sources = [{
-    "kind": "git",
-    "url": "https://github.com/IBM/docling-mcp",
-    "ref": "main",
-    "probe": True   # optional: check server capabilities before registering
-}]
-
-# 2. Initialize the registrar for the Gateway Admin API
-registrar = BulkRegistrar(
-    gateway_url="http://localhost:4444",
-    token="YOUR_ADMIN_TOKEN"
+res = hub.search(
+    q="summarize pdfs",
+    type="any",            # search across all entity types
+    limit=5,               # Top-5 by default
+    with_snippets=True     # include short summary snippets when available
 )
 
-# 3. Run bulk registration (async)
-results = asyncio.run(registrar.register_servers(sources))
-print("Registration results:", results)
+for item in res.get("items", []):
+    print(
+        item.get("id"),
+        item.get("name"),
+        item.get("manifest_url"),  # absolute link to the manifest
+        item.get("install_url"),   # convenience link to /catalog/install
+    )
 ```
 
-### Alternative: NDJSON file of sources
+**Notes**
 
-```python
-import asyncio, json
-from matrix_sdk.bulk.bulk_registrar import BulkRegistrar
-
-# Load newline‑delimited JSON list of sources
-with open("sources.ndjson") as f:
-    sources = [json.loads(line) for line in f if line.strip()]
-
-registrar = BulkRegistrar("http://localhost:4444", token="YOUR_ADMIN_TOKEN")
-results = asyncio.run(registrar.register_servers(sources))
-print("Results:", results)
-```
-
-**Key points**
-
-* Fully **asynchronous**, optimized for high‑throughput & retries.
-* Manifests can come from Git, ZIP, Docker, etc., and will be **upserted** into the Gateway.
-* **Does not** touch your local codebase or lockfiles—only talks to the Admin API under `/admin/servers`.
+* Omit `type` or use `type="any"` to search across agents, tools, and MCP servers.
+* `include_pending=True` shows items not yet registered with Gateway (useful in dev).
 
 ---
 
-## Why two clients?
+## Show Entity Details
 
-* **`MatrixClient`** = Catalog & Install
+```python
+from matrix_sdk import MatrixClient
 
-  * Manages **what** agents/tools are available and **pulls** their code into your projects.
-* **`BulkRegistrar`** = Gateway Registration
+hub = MatrixClient("http://127.0.0.1:7300")
+detail = hub.entity("tool:hello@0.1.0")
+print(detail.get("name"), "-", detail.get("summary"))
+```
 
-  * Manages **where** those agents/tools run at runtime, registering them with the MCP‑Gateway.
+---
 
-Their separation keeps each focused, but you can wrap both in your own façade if you prefer a single entrypoint.
+## Install an Item
+
+```python
+from matrix_sdk import MatrixClient
+
+hub = MatrixClient("http://127.0.0.1:7300")
+hub.install(
+    id="tool:hello@0.1.0",
+    target="./.matrix/runners/demo",
+    # alias="hello",            # optional; hub may ignore (CLI uses locally)
+    # options={"force": True},  # optional pass-through
+)
+```
+
+The Hub returns an install plan + results (artifacts, adapters written, lockfile path). Some hubs may return a simple `{ "ok": true }`.
+
+---
+
+## Manage Catalog Remotes
+
+```python
+from matrix_sdk import MatrixClient
+
+hub = MatrixClient("http://127.0.0.1:7300")
+
+print("Remotes:", hub.list_remotes())
+hub.add_remote("https://example.org/catalog/index.json", name="example")
+hub.trigger_ingest("example")
+```
+
+> Route names can be overridden via `routes={...}` in the client if your Hub uses different paths.
+
+---
+
+## Manifest helpers (optional)
+
+```python
+from matrix_sdk import MatrixClient
+
+hub = MatrixClient("http://127.0.0.1:7300")
+print("Manifest URL:", hub.manifest_url("tool:hello@0.1.0"))
+doc = hub.fetch_manifest("tool:hello@0.1.0")  # requires json or pyyaml
+```
+
+---
+
+## Bulk Registration (Gateway, optional)
+
+If you also manage an MCP Gateway, you can discover servers in a ZIP/dir/Git repo and register them via the Admin API.
+
+### Python (single source)
+
+```python
+import os, asyncio
+from matrix_sdk.bulk.bulk_registrar import BulkRegistrar
+
+# Choose ONE source; priority is ZIP > DIR > GIT
+if os.getenv("ZIP_PATH"):
+    sources = [{"kind": "zip", "path": os.getenv("ZIP_PATH"), "probe": True}]
+elif os.getenv("DIR_PATH"):
+    sources = [{"kind": "dir", "path": os.getenv("DIR_PATH"), "probe": True}]
+else:
+    sources = [{
+        "kind": "git",
+        "url": os.getenv("GIT_URL", "https://github.com/ruslanmv/hello-mcp"),
+        "ref": os.getenv("GIT_REF", "main"),
+        "probe": True,  # try ${endpoint}/capabilities and merge
+    }]
+
+registrar = BulkRegistrar(
+    gateway_url=os.getenv("GATEWAY_URL", "http://127.0.0.1:4444"),
+    token=os.getenv("ADMIN_TOKEN"),
+    concurrency=10,  # adjust as needed
+    probe=True,
+)
+
+results = asyncio.run(registrar.register_servers(sources))
+print(results)  # e.g., [{"message":"Server created successfully!","success":true}]
+```
+
+### CLI-style (module)
+
+```bash
+# Git source
+python -m matrix_sdk.bulk.cli \
+  --git https://github.com/ruslanmv/hello-mcp --ref main \
+  --gateway-url http://127.0.0.1:4444 \
+  --token "$ADMIN_TOKEN"
+
+# ZIP source (preferred to avoid git/network)
+python -m matrix_sdk.bulk.cli \
+  --zip ./hello-mcp-main.zip \
+  --gateway-url http://127.0.0.1:4444 \
+  --token "$ADMIN_TOKEN"
+
+# Directory source (already cloned)
+python -m matrix_sdk.bulk.cli \
+  --dir ./repo \
+  --gateway-url http://127.0.0.1:4444 \
+  --token "$ADMIN_TOKEN"
+```
+
+**How it works**
+
+* **Discovery (matrix-first):** looks for `matrix/index.json` or `matrix/*.manifest.json`; else falls back to `[tool.mcp_server]` in `pyproject.toml`.
+* **Gateway compatibility:** posts **JSON** first; if the gateway expects form data on `/admin/servers`, it **auto-falls back** to URL-encoded form and **sanitizes `name`** to meet gateway rules.
+* **Resilience:** stable idempotency key, concurrency, and exponential backoff with jitter.
+
+---
+
+## Error handling
+
+```python
+from matrix_sdk import MatrixClient, SDKError
+
+hub = MatrixClient("http://127.0.0.1:7300")
+
+try:
+    hub.install(id="tool:does-not-exist@0.0.0", target="./dest")
+except SDKError as e:
+    print("Install failed:", e.status, e.detail)
+```
+
+

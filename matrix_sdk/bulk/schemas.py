@@ -3,35 +3,52 @@ from __future__ import annotations
 
 from typing import Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field, HttpUrl
-
-# Import the canonical EntityType from the main schemas file
-# This import is no longer used by ServerManifest but may be used by other models.
+from pydantic import BaseModel, Field, AnyUrl, ConfigDict, field_validator, model_validator
 
 
 class EndpointDescriptor(BaseModel):
+    """Wire shape expected by gateways, with 'schema' on the wire."""
+    model_config = ConfigDict(populate_by_name=True)
+
     transport: Literal["http", "ws", "sse", "stdio"]
-    url: HttpUrl
+    url: AnyUrl
     auth: Optional[Literal["bearer", "none"]] = "none"
-    schema: str
+    wire_schema: str = Field(..., alias="schema")  # emits as "schema"
 
 
 class ServerManifest(BaseModel):
-    # This is the corrected line.
-    # The field is renamed to `entity_type` to avoid the name clash.
-    # `alias="type"` ensures it still serializes/deserializes as "type".
+    """Normalized server manifest for Gateway Admin API."""
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
     entity_type: Literal["mcp_server"] = Field("mcp_server", alias="type")
 
-    uid: str
+    id: str
+    uid: Optional[str] = None
+
     name: str
-    version: str
+    version: Optional[str] = None
+
     summary: Optional[str] = ""
-    description: Optional[str]
-    providers: List[str] = []
-    frameworks: List[str] = []
-    capabilities: List[str] = []
+    description: Optional[str] = None
+    providers: List[str] = Field(default_factory=list)
+    frameworks: List[str] = Field(default_factory=list)
+    capabilities: List[str] = Field(default_factory=list)
     endpoint: EndpointDescriptor
-    labels: Optional[Dict[str, str]] = {}
+    labels: Optional[Dict[str, str]] = Field(default_factory=dict)
     quality_score: Optional[float] = Field(default=0.0, ge=0.0, le=1.0)
-    source_url: HttpUrl
-    license: Optional[str]
+    source_url: Optional[AnyUrl] = None
+    license: Optional[str] = None
+
+    @field_validator("id")
+    @classmethod
+    def _id_not_empty(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("id is required")
+        return v
+
+    @model_validator(mode="after")
+    def _compute_uid_if_missing(self) -> "ServerManifest":
+        if not self.uid:
+            t = self.entity_type
+            self.uid = f"{t}:{self.id}{('@' + self.version) if self.version else ''}"
+        return self

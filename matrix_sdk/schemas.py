@@ -60,6 +60,20 @@ class SearchItem(BaseModel):
         description="Short natural-language justification for why this result fits the query.",
     )
 
+    # --- New optional convenience fields (non-breaking, ignored if not present) ---
+    manifest_url: Optional[str] = Field(
+        default=None,
+        description="Direct URL to the entity manifest (if provided by the server).",
+    )
+    install_url: Optional[str] = Field(
+        default=None,
+        description="Convenience link for one-click install flow (if provided by the server).",
+    )
+    snippet: Optional[str] = Field(
+        default=None,
+        description="Short snippet derived from summary/description when with_snippets=true.",
+    )
+
 
 class SearchResponse(BaseModel):
     """
@@ -146,21 +160,61 @@ class InstallOutcome(BaseModel):
 # --------------------------------------------------------------------------- #
 class MatrixAPIError(RuntimeError):
     """
-    Optional SDK-visible error type. The client may raise this on non-2xx responses.
+    SDK-visible error type. Tolerates both keyword-only and positional forms.
 
-    Attributes:
-        status_code: HTTP status or None if not applicable.
-        body: Parsed JSON body or raw text if available; None otherwise.
+    Accepted forms:
+      - MatrixAPIError("message", *, status_code=..., body=...)
+      - MatrixAPIError(status_code, detail)
+      - MatrixAPIError(status_code, detail, body)
     """
 
     def __init__(
-        self, message: str, *, status_code: Optional[int] = None, body: Any = None
+        self,
+        *args,
+        status_code: Optional[int] = None,
+        body: Any = None,
+        detail: Optional[str] = None,
+        **kwargs,
     ) -> None:
-        super().__init__(message)
-        self.status_code = status_code
-        self.body = body
+        # Back-compat argument parsing
+        sc = status_code
+        b = body
+        det = detail
+        msg: str
 
-    def __repr__(self) -> str:  # pragma: no cover - trivial representation
-        return (
-            f"MatrixAPIError(status_code={self.status_code}, message={self.args[0]!r})"
-        )
+        if len(args) == 0:
+            # No message provided; synthesize a generic one
+            msg = f"HTTP {sc}" if sc is not None else "Matrix API error"
+
+        elif len(args) == 1:
+            # MatrixAPIError("message", ...)
+            msg = str(args[0])
+
+        elif len(args) == 2 and isinstance(args[0], int):
+            # MatrixAPIError(status_code, detail)
+            sc = args[0]
+            det = str(args[1]) if args[1] is not None else None
+            msg = f"HTTP {sc}: {det or ''}".rstrip()
+            # Keep a minimal body if not supplied explicitly
+            if b is None and det is not None:
+                b = {"detail": det}
+
+        elif len(args) >= 3 and isinstance(args[0], int):
+            # MatrixAPIError(status_code, detail, body)
+            sc = args[0]
+            det = str(args[1]) if args[1] is not None else None
+            b = args[2]
+            msg = f"HTTP {sc}: {det or ''}".rstrip()
+
+        else:
+            # Fallback: treat first arg as message
+            msg = str(args[0])
+
+        self.status_code = sc
+        # Prefer explicit body; otherwise stash the textual detail for callers
+        self.body = b if b is not None else ({"detail": det} if det is not None else None)
+
+        super().__init__(msg)
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return f"MatrixAPIError(status_code={self.status_code}, message={self.args[0]!r})"

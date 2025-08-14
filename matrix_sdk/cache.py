@@ -18,6 +18,17 @@ Typical flow in client.search():
 Notes:
 - The cache format is simple JSON: {"ts": float, "etag": str|null, "payload": <any>}
 - You can safely delete the cache directory at any time.
+
+Upgrade (additive, non-breaking):
+- Added convenience methods used by newer MatrixClient code:
+    • make_key(path, params)       → stable hash key (path+params)
+    • get_etag(key)                → read ETag without payload parsing
+    • get_body(key)                → read cached payload (even if expired)
+    • save(key, etag=?, body=..)  → alias to set()
+- Kept legacy API:
+    • get(key, allow_expired=False) → returns CachedResponse
+    • set(key, response, etag=?)
+    • make_cache_key(url, params)  → stable key based on URL+params
 """
 from __future__ import annotations
 
@@ -53,6 +64,12 @@ class Cache:
         key = make_cache_key("http://host/catalog/search", {"q": "pdf"})
         entry = cache.get(key, allow_expired=True)
         cache.set(key, {"items": [], "total": 0}, etag='W/"abc"')
+
+    New (compatible) helpers used by MatrixClient:
+        cache_key = cache.make_key("/catalog/search", {"q": "pdf", "limit": 5})
+        etag = cache.get_etag(cache_key)
+        body = cache.get_body(cache_key)
+        cache.save(cache_key, etag='W/"abc"', body={"items": [], "total": 0})
     """
 
     def __init__(
@@ -62,7 +79,7 @@ class Cache:
         self.ttl = int(ttl)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
-    # ------------------------------- Public API ------------------------------- #
+    # ------------------------------- Public API (legacy) ------------------------------- #
 
     def get(self, key: str, *, allow_expired: bool = False) -> Optional[CachedResponse]:
         """
@@ -120,12 +137,60 @@ class Cache:
             except OSError:
                 pass
 
+    # ------------------------------- Public API (new helpers) ------------------------------- #
+
+    def make_key(self, path: str, params: Dict[str, Any]) -> str:
+        """
+        Create a stable key for a logical route and its params.
+        This mirrors the in-memory helper used by newer clients.
+
+        Note:
+            • path should be the route path (e.g., "/catalog/search"), not a full URL
+            • params should be JSON-serializable
+        """
+        canon = json.dumps({"path": path, "params": _jsonify(params)}, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(canon.encode("utf-8")).hexdigest()
+
+    def get_etag(self, key: str) -> Optional[str]:
+        """
+        Return the stored ETag for a key, if present (expired entries allowed).
+        """
+        entry = self.get(key, allow_expired=True)
+        return entry.etag if entry else None
+
+    def get_body(self, key: str) -> Optional[Any]:
+        """
+        Return the stored payload for a key (expired entries allowed).
+
+        This is primarily used to serve 304 Not Modified responses from cache.
+        """
+        entry = self.get(key, allow_expired=True)
+        return entry.payload if entry else None
+
+    def save(self, key: str, *, etag: Optional[str], body: Any) -> None:
+        """
+        Alias to set() matching the newer helper signature.
+        """
+        self.set(key, body, etag=etag)
+
     # ------------------------------- Internals -------------------------------- #
 
     def _path_for_key(self, key: str) -> Path:
         # Hash the key to avoid long filenames and sanitize
         h = hashlib.sha256(key.encode("utf-8")).hexdigest()
         return self.cache_dir / f"{h}.json"
+
+
+def _jsonify(value: Any) -> Any:
+    """
+    Ensure values used in key generation are JSON-stable.
+    """
+    if isinstance(value, (dict, list, tuple)):
+        try:
+            return json.loads(json.dumps(value, sort_keys=True, separators=(",", ":")))
+        except Exception:
+            return str(value)
+    return value
 
 
 def _normalize_params(params: Dict[str, Any]) -> str:
@@ -148,5 +213,7 @@ def _normalize_params(params: Dict[str, Any]) -> str:
 def make_cache_key(url: str, params: Dict[str, Any]) -> str:
     """
     Create a stable cache key from URL + normalized query params.
+
+    (Legacy helper — retained for backwards compatibility.)
     """
     return f"{url}?{_normalize_params(params or {})}"
