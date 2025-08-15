@@ -15,7 +15,7 @@ Additions (backwards-compatible):
 - delete_remote(...)           → DELETE /catalog/remotes (POST fallback)
 - manifest_url(...)            → resolve a manifest URL for an entity
 - fetch_manifest(...)          → fetch and parse manifest (JSON or YAML)
-- MatrixError                     → subclass of MatrixAPIError; raised by this client
+- MatrixError                  → subclass of MatrixAPIError; raised by this client
 - search(...) enhancements     → accept positional `q`; treat type="any" as no filter;
                                 normalize booleans for include_pending/with_snippets
 - Cache compatibility          → supports both legacy cache (get/set) and simple cache
@@ -28,6 +28,7 @@ Return types:
 from __future__ import annotations
 
 import json
+import os
 from typing import Any, Dict, Iterable, Optional, Type, TypeVar, Union
 from urllib.parse import quote, urlencode
 
@@ -51,15 +52,11 @@ except Exception:  # pragma: no cover
 
 # Optional cache (both legacy and simple supported)
 try:  # pragma: no cover - imports depend on your package layout
-    # Legacy style: Cache.get(key, allow_expired)
-    # -> entry{etag,payload}; Cache.set(key, payload, etag=?)
-    # Plus a helper to form a stable key
     from .cache import Cache, make_cache_key  # type: ignore[attr-defined]
 except Exception:  # pragma: no cover
     Cache = None  # type: ignore
 
     def make_cache_key(url: str, params: Dict[str, Any]) -> str:  # type: ignore
-        # Minimal fallback; not persisted; stable enough for tests/local
         return (
             url
             + "?"
@@ -73,8 +70,6 @@ __all__ = [
 ]
 
 T = TypeVar("T")
-
-# Make MatrixError predictable and compatible with MatrixAPIError
 
 
 class MatrixError(MatrixAPIError):
@@ -93,8 +88,6 @@ class MatrixError(MatrixAPIError):
         self.status = int(status)
         self.detail = (detail or "").strip()
         self.body = body
-        # Initialize parent for compatibility with any code catching MatrixAPIError
-        # Keep detail as the primary message.
         super().__init__(
             self.detail or f"HTTP {self.status}",
             status_code=self.status,
@@ -103,8 +96,6 @@ class MatrixError(MatrixAPIError):
         )
 
     def __str__(self) -> str:
-        # Ensure the status code appears in the string, as tests expect.
-        # Examples: "404 not found", "0 Network error"
         if self.detail:
             return f"{self.status} {self.detail}"
         return str(self.status)
@@ -158,8 +149,6 @@ class MatrixClient:
             self._headers["Authorization"] = f"Bearer {token}"
 
         # Detect cache API flavor (legacy vs. simple)
-        # legacy: get/set/entry.etag/entry.payload (+make_cache_key function)
-        # simple: make_key/get_etag/get_body/save
         self._cache_mode: Optional[str] = None
         if self.cache is not None:
             if hasattr(self.cache, "get") and hasattr(self.cache, "set"):
@@ -175,7 +164,6 @@ class MatrixClient:
     def _prepare_search_params(
         self, q: str, type: Optional[str], **filters: Any
     ) -> Dict[str, Any]:
-        """Validates and prepares parameters for the search API call."""
         if not q:
             raise ValueError("q (query) is required")
 
@@ -183,7 +171,6 @@ class MatrixClient:
         if type and type.lower() != "any":
             params["type"] = type
 
-        # Normalize boolean-like filter values
         for k, v in filters.items():
             if v is None:
                 continue
@@ -197,7 +184,6 @@ class MatrixClient:
     def _get_cache_headers(
         self, path: str, params: Dict[str, Any]
     ) -> tuple[Dict[str, str], Any]:
-        """Prepares request headers for caching and returns the cache key."""
         headers = self._headers.copy()
         cache_key = None
         if not self.cache:
@@ -208,7 +194,7 @@ class MatrixClient:
             entry = self.cache.get(cache_key, allow_expired=True)
             if entry and getattr(entry, "etag", None):
                 headers["If-None-Match"] = entry.etag
-            return headers, entry  # Return entry for later use
+            return headers, entry
 
         if self._cache_mode == "simple":
             try:
@@ -217,12 +203,11 @@ class MatrixClient:
                 if etag:
                     headers["If-None-Match"] = etag
             except Exception:
-                return headers, None  # Ignore cache on error
+                return headers, None
 
         return headers, cache_key
 
     def _handle_search_cache(self, resp: httpx.Response, cache_context: Any) -> None:
-        """Saves a successful search response to the cache."""
         if not self.cache or not cache_context:
             return
 
@@ -237,12 +222,11 @@ class MatrixClient:
             try:
                 self.cache.save(cache_key, etag=etag, body=data)
             except Exception:
-                pass  # Ignore cache save errors
+                pass
 
     def _handle_not_modified(
         self, cache_context: Any
     ) -> Union[SearchResponse, Dict[str, Any]]:
-        """Handles a 304 Not Modified response by serving from cache."""
         if self._cache_mode == "legacy" and cache_context is not None:
             return self._parse(SearchResponse, cache_context.payload)
 
@@ -252,9 +236,8 @@ class MatrixClient:
                 if body is not None:
                     return self._parse(SearchResponse, body)
             except Exception:
-                pass  # Fall through if cache read fails
+                pass
 
-        # This should rarely be hit, but if it is, we need to re-request
         raise MatrixError(0, "Cache consistency error on 304 response.")
 
     def search(
@@ -264,15 +247,6 @@ class MatrixClient:
         type: Optional[str] = None,
         **filters: Any,
     ) -> Union[SearchResponse, Dict[str, Any]]:
-        """
-        Perform a catalog search.
-
-        Parameters:
-            q: free-text query (required)
-            type: "agent" | "tool" | "mcp_server" | "any" (optional; "any" → omit type)
-            **filters: capabilities, frameworks, providers, limit, offset, mode,
-                        with_rag, rerank, include_pending, with_snippets...
-        """
         params = self._prepare_search_params(q, type, **filters)
         path = "/catalog/search"
         headers, cache_context = self._get_cache_headers(path, params)
@@ -287,7 +261,6 @@ class MatrixClient:
             return self._parse(SearchResponse, self._safe_json(resp))
 
         except httpx.RequestError as e:
-            # On network error, try serving from cache as a last resort
             if self.cache and cache_context:
                 if self._cache_mode == "legacy":
                     fresh = self.cache.get(cache_context, allow_expired=False)
@@ -299,25 +272,19 @@ class MatrixClient:
             raise MatrixError(0, str(e)) from e
 
     def get_entity(self, id: str) -> Union[EntityDetail, Dict[str, Any]]:
-        """
-        Fetch full entity detail by its id (uid), e.g., "agent:pdf-summarizer@1.4.2".
-        """
         if not id:
             raise ValueError("id is required")
-        # keep : and @ intact for path param
         enc = quote(id, safe=":@")
         resp = self._request("GET", f"/catalog/entities/{enc}")
         return self._parse(EntityDetail, self._safe_json(resp))
 
-    # CLI compatibility alias
     def entity(self, id: str) -> Union[EntityDetail, Dict[str, Any]]:
-        """Alias for get_entity(id)."""
         return self.get_entity(id)
 
     def install(
         self,
         id: str,
-        target: str,
+        target: str | os.PathLike[str],
         version: Optional[str] = None,
         *,
         alias: Optional[str] = None,
@@ -330,15 +297,14 @@ class MatrixClient:
 
         Notes:
         - `version` is preserved for backward compatibility.
-        - Additional fields (`alias`, `options`, `manifest`, `source_url`) are included for
-          forward-compatibility with newer Hub features; the server may ignore unknown fields.
+        - Extra fields are included for forward-compatibility; server may ignore them.
         """
         if not id:
             raise ValueError("id is required")
-        if not target:
+        if target is None:
             raise ValueError("target is required")
 
-        body: Dict[str, Any] = {"id": id, "target": target}
+        body: Dict[str, Any] = {"id": id, "target": os.fspath(target)}
         if version:
             body["version"] = version
         if alias is not None:
@@ -356,9 +322,6 @@ class MatrixClient:
     # ----------------------- remotes management ----------------------- #
 
     def list_remotes(self) -> Dict[str, Any]:
-        """
-        List configured catalog remotes.
-        """
         resp = self._request("GET", "/catalog/remotes")
         return self._safe_json(resp)
 
@@ -369,12 +332,6 @@ class MatrixClient:
         name: Optional[str] = None,
         trust_policy: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """
-        Add a new catalog remote by URL (usually an index.json).
-
-        Body is intentionally permissive to allow server-side defaults:
-            { "url": "...", "name": "...", "trust_policy": {...} }
-        """
         if not url:
             raise ValueError("url is required")
         payload: Dict[str, Any] = {"url": url}
@@ -387,42 +344,31 @@ class MatrixClient:
         return self._safe_json(resp)
 
     def delete_remote(self, url: str) -> Dict[str, Any]:
-        """
-        Remove a configured remote. Tries DELETE first, falls back to POST shim.
-        """
         if not url:
             raise ValueError("url is required")
-        # Attempt DELETE with JSON body (some servers support this)
         try:
             resp = self._request(
                 "DELETE",
                 "/catalog/remotes",
                 json_body={"url": url},
-                expected=(200, 202, 204),  # some servers return 204 No Content
+                expected=(200, 202, 204),
             )
-            # Normalize response body
             try:
                 return self._safe_json(resp)
             except Exception:
                 return {"ok": True}
         except MatrixError as e:
             if e.args and "failed" in e.args[0].lower():
-                # Fall through to POST shim below
                 pass
             else:
-                # Non-protocol error, re-raise
                 raise
 
-        # Fallback to POST shim
         resp = self._request(
             "POST", "/catalog/remotes", json_body={"url": url, "op": "delete"}
         )
         return self._safe_json(resp)
 
     def trigger_ingest(self, name: str) -> Dict[str, Any]:
-        """
-        Manually trigger ingest for a named remote.
-        """
         if not name:
             raise ValueError("name is required")
         resp = self._request("POST", "/catalog/ingest", params={"remote": name})
@@ -431,25 +377,17 @@ class MatrixClient:
     # ----------------------- manifest helpers (optional) ----------------------- #
 
     def manifest_url(self, id: str) -> Optional[str]:
-        """
-        Resolve a manifest URL for a given entity, preferring the entity's source_url.
-        Falls back to a resolver path if exposed by the Hub.
-        """
         try:
             ent = self.entity(id)
-            url = ent.get("source_url") or ent.get("manifest_url")
+            url = ent.get("source_url") or ent.get("manifest_url")  # type: ignore[call-arg]
             if url:
                 return url
         except Exception:
             pass
-        # Fallback conventional route if server exposes it
         enc = quote(id, safe=":@")
         return f"{self.base_url}/catalog/manifest/{enc}"
 
     def fetch_manifest(self, id: str) -> Dict[str, Any]:
-        """
-        Fetch and parse a manifest (JSON preferred; YAML supported if PyYAML installed).
-        """
         url = self.manifest_url(id)
         if not url:
             raise MatrixError(404, "Manifest URL not found")
@@ -465,9 +403,8 @@ class MatrixClient:
         if "application/json" in ctype or ctype.endswith("+json"):
             return self._safe_json(resp)
 
-        # Best-effort YAML
         try:
-            import yaml  # optional dependency
+            import yaml  # optional
 
             return yaml.safe_load(resp.text)  # type: ignore[no-any-return]
         except Exception:
@@ -485,9 +422,6 @@ class MatrixClient:
         headers: Optional[Dict[str, str]] = None,
         expected: Iterable[int] = (200, 201, 202, 204, 304),
     ) -> httpx.Response:
-        """
-        Single-request wrapper with consistent error handling.
-        """
         url = f"{self.base_url}{path}"
         hdrs = dict(self._headers)
         if headers:
@@ -497,14 +431,11 @@ class MatrixClient:
             with httpx.Client(timeout=self.timeout, headers=hdrs) as client:
                 resp = client.request(method, url, params=params, json=json_body)
         except httpx.RequestError as e:
-            # surfacing transport errors (DNS, timeouts, TLS, etc.)
             raise MatrixError(0, str(e)) from e
 
         if resp.status_code not in expected:
-            # Try decoding body for better diagnostics
-            body: Any
             try:
-                body = resp.json()
+                body: Any = resp.json()
             except json.JSONDecodeError:
                 body = resp.text
             raise MatrixError(
@@ -520,13 +451,9 @@ class MatrixClient:
             return {"raw": resp.text, "status_code": resp.status_code}
 
     def _parse(self, model_cls: Union[Type[T], Any], data: Any) -> Union[T, Any]:
-        """
-        Attempt to parse with Pydantic model if available; otherwise return raw dict.
-        """
         if _HAS_TYPES and hasattr(model_cls, "model_validate"):
             try:
                 return model_cls.model_validate(data)  # type: ignore [union-attr]
             except Exception:
-                # Fall back to raw if validation fails
                 return data
         return data
