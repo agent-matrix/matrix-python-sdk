@@ -160,13 +160,13 @@ python -m matrix_sdk.bulk.cli \
 ## Error handling
 
 ```python
-from matrix_sdk import MatrixClient, SDKError
+from matrix_sdk import MatrixClient, MatrixError
 
 hub = MatrixClient("http://127.0.0.1:7300")
 
 try:
     hub.install(id="tool:does-not-exist@0.0.0", target="./dest")
-except SDKError as e:
+except MatrixError as e:
     print("Install failed:", e.status, e.detail)
 ```
 

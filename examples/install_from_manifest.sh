@@ -43,7 +43,7 @@ python - <<'PY'
 from __future__ import annotations
 import json, os, sys, urllib.request, urllib.error
 from typing import Any, Dict, Optional
-from matrix_sdk import MatrixClient, SDKError
+from matrix_sdk import MatrixClient, MatrixError
 
 HUB_URL    = os.getenv("HUB_URL", "http://127.0.0.1:7300")
 HUB_TOKEN  = os.getenv("HUB_TOKEN") or None
@@ -137,7 +137,7 @@ if DO_REMOTE:
         print("Adding remote…")
         resp = client.add_remote(INDEX_URL, name=REMOTE_NAME)
         print(to_jsonable(resp))
-    except SDKError as e:
+    except MatrixError as e:
         print(f"Warning: add_remote failed (HTTP {getattr(e,'status','n/a')}): {getattr(e,'detail',str(e))}")
     except Exception as e:
         print(f"Warning: add_remote raised: {e}")
@@ -146,7 +146,7 @@ if DO_REMOTE:
         print("Triggering ingest…")
         resp = client.trigger_ingest(REMOTE_NAME)
         print(to_jsonable(resp))
-    except SDKError as e:
+    except MatrixError as e:
         print(f"Warning: trigger_ingest failed (HTTP {getattr(e,'status','n/a')}): {getattr(e,'detail',str(e))}")
     except Exception as e:
         print(f"Warning: trigger_ingest raised: {e}")
@@ -195,7 +195,7 @@ try:
             print(line)
     else:
         print(json.dumps(outj, indent=2))
-except SDKError as e:
+except MatrixError as e:
     # Non-fatal – print reason and continue
     reason = None
     body = getattr(e, "body", None)

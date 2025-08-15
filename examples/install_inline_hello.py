@@ -21,7 +21,7 @@ from typing import Any, Dict, Optional, Tuple
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from matrix_sdk import MatrixClient, SDKError
+from matrix_sdk import MatrixClient, MatrixError
 
 HUB_URL = os.getenv("HUB_URL", "http://127.0.0.1:7300")
 HUB_TOKEN = os.getenv("HUB_TOKEN")
@@ -139,7 +139,7 @@ def main() -> None:
         )
         print("\nInstall OK")
         print(json.dumps(_to_jsonable(out), indent=2, ensure_ascii=False))
-    except SDKError as e:
+    except MatrixError as e:
         # Keep the pipeline; report why install was skipped/failed
         detail = e.detail or ""
         print(

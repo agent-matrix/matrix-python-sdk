@@ -7,7 +7,6 @@ import os
 import shutil
 import subprocess
 import tempfile
-from pathlib import Path
 from typing import Any, Dict, List
 
 try:
@@ -15,7 +14,7 @@ try:
 except Exception:  # pragma: no cover
     import tomli as tomllib  # type: ignore
 
-from .models import ServerManifest, EndpointDescriptor
+from .models import EndpointDescriptor, ServerManifest
 from .utils import with_temp_extract
 
 
@@ -51,7 +50,9 @@ def discover_manifests_from_source(source: Dict[str, Any]) -> List[ServerManifes
         tmpdir = tempfile.mkdtemp(prefix="mcp_git_")
         try:
             cmd = ["git", "clone", "--depth", "1", "--branch", ref, repo_url, tmpdir]
-            subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            subprocess.run(
+                cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            )
             return _discover_in_dir(tmpdir)
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
@@ -60,7 +61,9 @@ def discover_manifests_from_source(source: Dict[str, Any]) -> List[ServerManifes
 
 
 def _discover_in_dir(root: str) -> List[ServerManifest]:
-    """Matrix-first: if `matrix/` exists, parse manifests there; else fall back to pyproject.toml."""
+    """
+    Matrix-first: if `matrix/` exists, parse manifests there; else fall back to pyproject.toml.
+    """
     # 1) Matrix folder path
     matrix_dir = os.path.join(root, "matrix")
     if os.path.isdir(matrix_dir):
@@ -76,37 +79,57 @@ def _discover_in_dir(root: str) -> List[ServerManifest]:
     return []
 
 
+def _parse_manifest_index(index_path: str, matrix_dir: str) -> List[ServerManifest]:
+    """Parses an index.json file to find and load server manifests."""
+    results: List[ServerManifest] = []
+    try:
+        with open(index_path, "r", encoding="utf-8") as f:
+            index_data = json.load(f)
+
+        # Accept arrays or objects with a "servers" key
+        entries = (
+            index_data.get("servers") if isinstance(index_data, dict) else index_data
+        )
+        if not isinstance(entries, list):
+            return []
+
+        for item in entries:
+            mf = None
+            # Case 1: Item is a relative file path to another manifest
+            if isinstance(item, str) and item.endswith(".json"):
+                path = (
+                    os.path.join(matrix_dir, item) if not os.path.isabs(item) else item
+                )
+                if os.path.isfile(path):
+                    mf = _load_single_matrix_manifest(path)
+            # Case 2: Item is an inline manifest dictionary
+            elif isinstance(item, dict) and item.get("type") in {
+                "mcp_server",
+                "server",
+            }:
+                mf = _map_matrix_dict_to_manifest(item)
+
+            if mf:
+                results.append(mf)
+    except Exception:
+        # If parsing fails for any reason, return an empty list for this source.
+        return []
+    return results
+
+
 def _load_matrix_manifests(matrix_dir: str) -> List[ServerManifest]:
+    """Loads all manifests from a directory, prioritizing index.json."""
     results: List[ServerManifest] = []
 
-    # Prefer index.json if present
+    # 1. Prefer index.json if present by using our new helper function.
     index_path = os.path.join(matrix_dir, "index.json")
     if os.path.isfile(index_path):
-        try:
-            with open(index_path, "r", encoding="utf-8") as f:
-                index = json.load(f)
-            # Accept arrays or objects with "servers" key
-            entries = index.get("servers") if isinstance(index, dict) else index
-            if isinstance(entries, list):
-                for item in entries:
-                    # Item could be an absolute URL to a manifest or a relative file path
-                    if isinstance(item, str) and item.endswith(".json"):
-                        p = os.path.join(matrix_dir, item) if not os.path.isabs(item) else item
-                        if os.path.isfile(p):
-                            mf = _load_single_matrix_manifest(p)
-                            if mf:
-                                results.append(mf)
-                    elif isinstance(item, dict) and item.get("type") in {"mcp_server", "server"}:
-                        mf = _map_matrix_dict_to_manifest(item)
-                        if mf:
-                            results.append(mf)
-        except Exception:
-            pass  # fall through to glob
+        results.extend(_parse_manifest_index(index_path, matrix_dir))
 
-    # Glob *.manifest.json as a fallback
+    # 2. Glob *.manifest.json as a fallback or for additional manifests.
     for path in glob.glob(os.path.join(matrix_dir, "*.manifest.json")):
         mf = _load_single_matrix_manifest(path)
-        if mf:
+        if mf and mf not in results:  # Avoid duplicates if also in index.json
             results.append(mf)
 
     return results
@@ -136,7 +159,10 @@ def _map_matrix_dict_to_manifest(d: Dict[str, Any]) -> ServerManifest | None:
         )
         man = ServerManifest(
             entity_type="mcp_server",
-            id=str(d.get("id") or d.get("name") or "component").strip().lower().replace(" ", "-"),
+            id=str(d.get("id") or d.get("name") or "component")
+            .strip()
+            .lower()
+            .replace(" ", "-"),
             name=str(d.get("name") or d.get("id") or "component"),
             version=d.get("version"),
             summary=d.get("summary") or d.get("description"),
@@ -175,7 +201,10 @@ def _load_pyproject_manifest(pyproject_path: str) -> ServerManifest:
 
     man = ServerManifest(
         entity_type="mcp_server",
-        id=str(meta.get("id") or meta.get("name") or "component").strip().lower().replace(" ", "-"),
+        id=str(meta.get("id") or meta.get("name") or "component")
+        .strip()
+        .lower()
+        .replace(" ", "-"),
         name=str(meta.get("name") or meta.get("id") or "component"),
         version=meta.get("version"),
         summary=meta.get("summary") or meta.get("description"),

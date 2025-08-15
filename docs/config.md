@@ -196,21 +196,21 @@ Or pass `proxies` to your `httpx.Client`.
 
 ## Error handling
 
-The client raises `SDKError` on non-2xx responses or network errors:
+The client raises `MatrixError` on non-2xx responses or network errors:
 
 ```python
-from matrix_sdk import MatrixClient, SDKError
+from matrix_sdk import MatrixClient, MatrixError
 
 hub = MatrixClient("http://127.0.0.1:7300")
 
 try:
     hub.install(id="tool:missing@0.0.0", target="./dest")
-except SDKError as e:
+except MatrixError as e:
     print("Failed:", e.status, e.detail)
 ```
 
-* HTTP errors → `SDKError(status=<http code>, detail=<server message>)`
-* Timeouts / connection issues → `SDKError(status=0, detail="timeout" or similar)`
+* HTTP errors → `MatrixError(status=<http code>, detail=<server message>)`
+* Timeouts / connection issues → `MatrixError(status=0, detail="timeout" or similar)`
 
 ---
 

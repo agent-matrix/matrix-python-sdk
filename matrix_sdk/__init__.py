@@ -1,19 +1,28 @@
+# matrix_sdk/__init__.py
 # -*- coding: utf-8 -*-
-"""
-matrix_sdk.__init__
+from __future__ import annotations
 
-Public SDK surface for Matrix Hub Python SDK.
+from . import deep_link
+from .client import MatrixClient, MatrixError
+from .deep_link import (
+    DeepLink,
+    HandleResult,
+    InvalidMatrixUri,
+)
+from .deep_link import (
+    handle_install as handle_deep_link_install,
+)
+from .deep_link import (
+    parse as parse_deep_link,
+)
 
-This module intentionally re-exports the primary client adapter and the
-typed error class used by callers (including matrix-cli). The change is
-additive and safe for production: no previous runtime behavior is removed.
-
-Exports:
-    - MatrixClient : High-level HTTP client compatible with Matrix Hub APIs
-                     and the refactored Matrix CLI contract.
-    - SDKError     : Lightweight exception carrying HTTP status + detail.
-"""
-
-from .client import MatrixClient, SDKError
-
-__all__ = ["MatrixClient", "SDKError"]
+__all__ = [
+    "MatrixClient",
+    "MatrixError",
+    "deep_link",
+    "InvalidMatrixUri",
+    "DeepLink",
+    "HandleResult",
+    "parse_deep_link",
+    "handle_deep_link_install",
+]

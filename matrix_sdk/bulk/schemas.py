@@ -3,11 +3,19 @@ from __future__ import annotations
 
 from typing import Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field, AnyUrl, ConfigDict, field_validator, model_validator
+from pydantic import (
+    AnyUrl,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 
 class EndpointDescriptor(BaseModel):
     """Wire shape expected by gateways, with 'schema' on the wire."""
+
     model_config = ConfigDict(populate_by_name=True)
 
     transport: Literal["http", "ws", "sse", "stdio"]
@@ -18,6 +26,7 @@ class EndpointDescriptor(BaseModel):
 
 class ServerManifest(BaseModel):
     """Normalized server manifest for Gateway Admin API."""
+
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
     entity_type: Literal["mcp_server"] = Field("mcp_server", alias="type")

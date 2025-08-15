@@ -28,7 +28,7 @@ from typing import Any, Dict, Optional
 
 import httpx
 
-from matrix_sdk import MatrixClient, SDKError
+from matrix_sdk import MatrixClient, MatrixError
 
 
 # ---------------------------- helpers ---------------------------- #
@@ -214,7 +214,7 @@ def main() -> int:
             manifest=manifest,       # <- direct inline manifest
             source_url=manifest_url  # <- provenance: where we got it from
         )
-    except SDKError as e:
+    except MatrixError as e:
         status = getattr(e, "status", None)
         detail = getattr(e, "detail", None) or str(e)
 

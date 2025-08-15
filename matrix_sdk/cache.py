@@ -148,7 +148,11 @@ class Cache:
             • path should be the route path (e.g., "/catalog/search"), not a full URL
             • params should be JSON-serializable
         """
-        canon = json.dumps({"path": path, "params": _jsonify(params)}, sort_keys=True, separators=(",", ":"))
+        canon = json.dumps(
+            {"path": path, "params": _jsonify(params)},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
         return hashlib.sha256(canon.encode("utf-8")).hexdigest()
 
     def get_etag(self, key: str) -> Optional[str]:

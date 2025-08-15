@@ -8,17 +8,19 @@ from typing import Dict, List, Literal, Optional
 try:
     # Pydantic v2
     from pydantic import (
-        BaseModel,
-        Field,
         AnyUrl,
+        BaseModel,
         ConfigDict,
+        Field,
         field_validator,
         model_validator,
     )
+
     PYDANTIC_V2 = True
 except Exception:  # pragma: no cover
     # Pydantic v1 fallback
-    from pydantic import BaseModel, Field, AnyUrl, validator, root_validator  # type: ignore
+    from pydantic import AnyUrl, BaseModel, Field, root_validator, validator  # type: ignore
+
     PYDANTIC_V2 = False
 
 
@@ -28,6 +30,7 @@ class EndpointDescriptor(BaseModel):
     if PYDANTIC_V2:
         model_config = ConfigDict(populate_by_name=True)
     else:
+
         class Config:  # type: ignore
             allow_population_by_field_name = True
 
@@ -43,6 +46,7 @@ class ServerManifest(BaseModel):
     if PYDANTIC_V2:
         model_config = ConfigDict(populate_by_name=True, extra="ignore")
     else:
+
         class Config:  # type: ignore
             allow_population_by_field_name = True
             extra = "ignore"
@@ -68,6 +72,7 @@ class ServerManifest(BaseModel):
 
     # --- validators ---
     if PYDANTIC_V2:
+
         @field_validator("id")
         @classmethod
         def _id_not_empty(cls, v: str) -> str:
@@ -79,9 +84,13 @@ class ServerManifest(BaseModel):
         def _compute_uid_if_missing(self) -> "ServerManifest":
             if not self.uid:
                 t = self.entity_type
-                self.uid = f"{t}:{self.id}{('@' + self.version) if self.version else ''}"
+                self.uid = (
+                    f"{t}:{self.id}{('@' + self.version) if self.version else ''}"
+                )
             return self
+
     else:  # Pydantic v1
+
         @validator("id")
         def _id_not_empty_v1(cls, v):  # type: ignore
             if not v or not str(v).strip():

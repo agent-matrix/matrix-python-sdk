@@ -1,4 +1,3 @@
-# matrix_sdk/bulk/gateway.py
 from __future__ import annotations
 
 import hashlib
@@ -92,7 +91,9 @@ class GatewayAdminClient:
     This client posts JSON first, then auto-falls back to form if needed.
     """
 
-    def __init__(self, base_url: str, token: Optional[str] = None, timeout: float = 20.0):
+    def __init__(
+        self, base_url: str, token: Optional[str] = None, timeout: float = 20.0
+    ):
         if not base_url:
             raise ValueError("base_url is required")
         self.base = base_url.rstrip("/")
@@ -104,103 +105,129 @@ class GatewayAdminClient:
         if token:
             self.headers["Authorization"] = f"Bearer {token}"
 
+    def _prepare_payload(self, manifest: Any) -> Dict[str, Any]:
+        """Normalize the manifest into a JSON-safe dictionary."""
+        if isinstance(manifest, ServerManifest):
+            return manifest.to_jsonable()
+        if isinstance(manifest, dict):
+            # Defensive: ensure any stray non-JSON types are stringified
+            return json.loads(json.dumps(manifest, default=str))
+
+        # Attempt Pydantic v2, then v1 serialization
+        for method_name in ("model_dump_json", "json"):
+            if hasattr(manifest, method_name):
+                try:
+                    dump_method = getattr(manifest, method_name)
+                    return json.loads(dump_method(by_alias=True, exclude_none=True))
+                except Exception:
+                    continue  # Try the next method if serialization fails
+
+        raise TypeError(f"Unsupported manifest type: {type(manifest)!r}")
+
+    def _parse_response(self, resp: httpx.Response) -> Dict[str, Any]:
+        """Parse a successful response, returning JSON or a success object."""
+        try:
+            return resp.json()
+        except json.JSONDecodeError:
+            return {"ok": True, "raw": resp.text}
+
+    def _get_error_details(
+        self, e: httpx.HTTPError
+    ) -> tuple[int | str, Any, str | None]:
+        """Extracts status, body, and request ID from an HTTP error."""
+        if hasattr(e, "response") and e.response is not None:
+            response = e.response
+            status = response.status_code
+            rid = response.headers.get("x-request-id") or response.headers.get(
+                "request-id"
+            )
+            try:
+                body = response.json()
+            except json.JSONDecodeError:
+                body = {"error": response.text or str(e)}
+            return status, body, rid
+        else:
+            # Network/transport error without a response
+            return "?", str(e), None
+
+    def _should_fallback_to_form(self, e: httpx.HTTPStatusError) -> bool:
+        """Determines if a failed JSON request should be retried as a form."""
+        status, body, _ = self._get_error_details(e)
+
+        if status not in (400, 415, 422):
+            return False
+
+        msg = ""
+        if isinstance(body, dict):
+            msg = str(body.get("message") or body.get("detail") or body)
+
+        missing_or_bad_name = (
+            ("Missing required field" in msg and "'name'" in msg)
+            or ("name" in msg and "missing" in msg.lower())
+            or ("name" in msg and "invalid" in msg.lower())
+        )
+        return missing_or_bad_name
+
+    async def _try_form_upsert(
+        self,
+        client: httpx.AsyncClient,
+        url: str,
+        original_headers: Dict[str, str],
+        payload: Dict[str, Any],
+        original_error: httpx.HTTPStatusError,
+    ) -> Dict[str, Any]:
+        """Attempt #2: form-encoded POST for legacy admin endpoints."""
+        form = _make_admin_form(payload)
+        if not form.get("name"):
+            # No way to build a valid form request; bubble up original error
+            status, body, rid = self._get_error_details(original_error)
+            error_message = (
+                f"Gateway upsert failed (no name for form fallback): "
+                f"HTTP {status}, request_id={rid}, body={body}"
+            )
+            raise RuntimeError(error_message) from original_error
+
+        # For form submit, switch content-type; keep other headers
+        form_headers = {
+            k: v for k, v in original_headers.items() if k.lower() != "content-type"
+        }
+
+        try:
+            resp2 = await client.post(url, headers=form_headers, data=form)
+            resp2.raise_for_status()
+            return self._parse_response(resp2)
+        except httpx.HTTPError as e2:
+            # The form fallback also failed.
+            code2, body2, rid2 = self._get_error_details(e2)
+            raise RuntimeError(
+                f"Gateway form upsert failed: {code2}, request_id={rid2}, body={body2}"
+            ) from e2
+
     async def upsert_server(
         self, manifest: Union[ServerManifest, Dict[str, Any]], *, idempotency_key: str
     ) -> Dict[str, Any]:
         url = f"{self.base}/admin/servers"
         hdrs = dict(self.headers)
         hdrs["Idempotency-Key"] = idempotency_key
+        payload = self._prepare_payload(manifest)
 
-        # --- Build a JSON-safe payload (no AnyUrl or other non-JSON types) ---
-        if isinstance(manifest, ServerManifest):
-            payload: Dict[str, Any] = manifest.to_jsonable()
-        elif isinstance(manifest, dict):
-            # Defensive: ensure any stray non-JSON types are stringified
-            payload = json.loads(json.dumps(manifest, default=str))
-        else:
-            # Pydantic BaseModel (v2 or v1) fallback if other models are passed in
-            try:
-                payload = json.loads(
-                    manifest.model_dump_json(by_alias=True, exclude_none=True)  # type: ignore[attr-defined]
-                )  # Pydantic v2
-            except Exception:
-                try:
-                    payload = json.loads(
-                        manifest.json(by_alias=True, exclude_none=True)  # type: ignore[attr-defined]
-                    )  # Pydantic v1
-                except Exception as e:
-                    raise TypeError(f"Unsupported manifest type: {type(manifest)!r}") from e
-
-        # --- Attempt #1: JSON POST (preferred modern API) ---
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             try:
+                # --- Attempt #1: JSON POST (preferred modern API) ---
                 resp = await client.post(url, headers=hdrs, json=payload)
                 resp.raise_for_status()
-                try:
-                    return resp.json()
-                except Exception:
-                    return {"ok": True, "raw": resp.text}
+                return self._parse_response(resp)
 
             except httpx.HTTPStatusError as e:
-                status = e.response.status_code
-                # Try to detect legacy/form-only endpoints (422/400/415 with "name" missing/invalid)
-                try:
-                    body = e.response.json()
-                except Exception:
-                    body = {"error": e.response.text if e.response is not None else str(e)}
+                # JSON post failed; check if we should fallback to a form post
+                if self._should_fallback_to_form(e):
+                    return await self._try_form_upsert(client, url, hdrs, payload, e)
 
-                msg = ""
-                if isinstance(body, dict):
-                    msg = str(body.get("message") or body.get("detail") or body)
-
-                missing_or_bad_name = (
-                    ("Missing required field" in msg and "'name'" in msg)
-                    or ("name" in msg and "missing" in msg.lower())
-                    or ("name" in msg and "invalid" in msg.lower())
-                )
-                should_fallback = status in (400, 415, 422) and missing_or_bad_name
-
-                if not should_fallback:
-                    rid = e.response.headers.get("x-request-id") or e.response.headers.get("request-id")
-                    raise RuntimeError(
-                        f"Gateway upsert failed: HTTP {status}, request_id={rid}, body={body}"
-                    ) from e
-
-                # --- Attempt #2: form-encoded POST (legacy admin create) ---
-                form = _make_admin_form(payload)
-                if not form.get("name"):
-                    # No reasonable way to build a form request; bubble up original error
-                    rid = e.response.headers.get("x-request-id") or e.response.headers.get("request-id")
-                    raise RuntimeError(
-                        f"Gateway upsert failed (no name for form fallback): HTTP {status}, request_id={rid}, body={body}"
-                    ) from e
-
-                # For form submit, switch content-type; keep Accept and auth headers
-                form_headers = {k: v for k, v in hdrs.items() if k.lower() != "content-type"}
-
-                try:
-                    resp2 = await client.post(url, headers=form_headers, data=form)
-                    resp2.raise_for_status()
-                    try:
-                        return resp2.json()
-                    except Exception:
-                        return {"ok": True, "raw": resp2.text}
-                except httpx.HTTPError as e2:
-                    rid2 = None
-                    body2: Any
-                    if hasattr(e2, "response") and e2.response is not None:
-                        rid2 = e2.response.headers.get("x-request-id") or e2.response.headers.get("request-id")
-                        try:
-                            body2 = e2.response.json()
-                        except Exception:
-                            body2 = e2.response.text
-                        code2 = e2.response.status_code
-                    else:
-                        body2 = str(e2)
-                        code2 = "?"
-                    raise RuntimeError(
-                        f"Gateway form upsert failed: {code2}, request_id={rid2}, body={body2}"
-                    ) from e2
+                # Not a fallback scenario, so it's a genuine error.
+                status, body, rid = self._get_error_details(e)
+                raise RuntimeError(
+                    f"Gateway upsert failed: HTTP {status}, request_id={rid}, body={body}"
+                ) from e
 
             except httpx.HTTPError as e:
                 # Network / transport errors

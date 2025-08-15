@@ -15,7 +15,7 @@ Additions (backwards-compatible):
 - delete_remote(...)           → DELETE /catalog/remotes (POST fallback)
 - manifest_url(...)            → resolve a manifest URL for an entity
 - fetch_manifest(...)          → fetch and parse manifest (JSON or YAML)
-- SDKError                     → subclass of MatrixAPIError; raised by this client
+- MatrixError                     → subclass of MatrixAPIError; raised by this client
 - search(...) enhancements     → accept positional `q`; treat type="any" as no filter;
                                 normalize booleans for include_pending/with_snippets
 - Cache compatibility          → supports both legacy cache (get/set) and simple cache
@@ -51,7 +51,8 @@ except Exception:  # pragma: no cover
 
 # Optional cache (both legacy and simple supported)
 try:  # pragma: no cover - imports depend on your package layout
-    # Legacy style: Cache.get(key, allow_expired) -> entry{etag,payload}; Cache.set(key, payload, etag=?)
+    # Legacy style: Cache.get(key, allow_expired)
+    # -> entry{etag,payload}; Cache.set(key, payload, etag=?)
     # Plus a helper to form a stable key
     from .cache import Cache, make_cache_key  # type: ignore[attr-defined]
 except Exception:  # pragma: no cover
@@ -59,28 +60,24 @@ except Exception:  # pragma: no cover
 
     def make_cache_key(url: str, params: Dict[str, Any]) -> str:  # type: ignore
         # Minimal fallback; not persisted; stable enough for tests/local
-        return url + "?" + urlencode(sorted((k, str(v)) for k, v in (params or {}).items()))
+        return (
+            url
+            + "?"
+            + urlencode(sorted((k, str(v)) for k, v in (params or {}).items()))
+        )
+
 
 __all__ = [
     "MatrixClient",
-    "SDKError",
+    "MatrixError",
 ]
 
 T = TypeVar("T")
 
-
-class SDKError_old(MatrixAPIError):
-    """
-    SDK-visible error that the CLI can catch. Subclasses MatrixAPIError
-    for backward compatibility with existing client code that already catches it.
-    """
-    pass
+# Make MatrixError predictable and compatible with MatrixAPIError
 
 
-# --- keep the existing imports ---
-
-# Make SDKError predictable and compatible with MatrixAPIError
-class SDKError(MatrixAPIError):
+class MatrixError(MatrixAPIError):
     """
     Structured SDK error.
 
@@ -89,71 +86,28 @@ class SDKError(MatrixAPIError):
         detail (str|None): Short human-friendly explanation (if available).
         body (Any): Parsed error payload (dict/text) returned by the server.
     """
-    def __init__(self, status: int, detail: Optional[str] = None, *, body: Any = None) -> None:
-        # Public attrs used by examples/CLI
-        self.status = status
-        self.detail = detail
+
+    def __init__(
+        self, status: int, detail: Optional[str] = None, *, body: Any = None
+    ) -> None:
+        self.status = int(status)
+        self.detail = (detail or "").strip()
         self.body = body
-        # Also initialize MatrixAPIError with keywords for compatibility
+        # Initialize parent for compatibility with any code catching MatrixAPIError
+        # Keep detail as the primary message.
         super().__init__(
-            detail or f"HTTP {status}",
-            status_code=status,
+            self.detail or f"HTTP {self.status}",
+            status_code=self.status,
             body=body,
-            detail=detail,
+            detail=self.detail,
         )
 
-# … unchanged code …
-
-    def _request(
-        self,
-        method: str,
-        path: str,
-        *,
-        params: Optional[Dict[str, Any]] = None,
-        json_body: Optional[Dict[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        expected: Iterable[int] = (200, 201, 202, 204, 304),
-    ) -> httpx.Response:
-        url = f"{self.base_url}{path}"
-        hdrs = dict(self._headers)
-        if headers:
-            hdrs.update(headers)
-
-        try:
-            with httpx.Client(timeout=self.timeout, headers=hdrs) as client:
-                resp = client.request(method, url, params=params, json=json_body)
-        except httpx.RequestError as e:
-            # Transport error: status 0, keep message as detail
-            raise SDKError(0, str(e)) from e
-
-        if resp.status_code not in expected:
-            # Try decoding body and extract a concise detail string if possible
-            body: Any
-            try:
-                body = resp.json()
-            except json.JSONDecodeError:
-                body = resp.text
-
-            detail: Optional[str] = None
-            if isinstance(body, dict):
-                # Common FastAPI error shape: {"detail": "..."}
-                detail = body.get("detail")
-                # Your Hub's install error shape: {"error":{"error":"InstallError","reason":"..."}}
-                if detail is None:
-                    err = body.get("error")
-                    if isinstance(err, dict):
-                        detail = err.get("reason") or err.get("error")
-                    elif isinstance(err, str):
-                        detail = err
-            # Fallback generic message
-            if not detail:
-                detail = f"{method} {path} failed ({resp.status_code})"
-
-            raise SDKError(resp.status_code, detail, body=body)
-
-        return resp
-
-
+    def __str__(self) -> str:
+        # Ensure the status code appears in the string, as tests expect.
+        # Examples: "404 not found", "0 Network error"
+        if self.detail:
+            return f"{self.status} {self.detail}"
+        return str(self.status)
 
 
 def _to_bool(v: Any) -> Optional[bool]:
@@ -210,10 +164,98 @@ class MatrixClient:
         if self.cache is not None:
             if hasattr(self.cache, "get") and hasattr(self.cache, "set"):
                 self._cache_mode = "legacy"
-            elif all(hasattr(self.cache, n) for n in ("make_key", "get_etag", "get_body", "save")):
+            elif all(
+                hasattr(self.cache, n)
+                for n in ("make_key", "get_etag", "get_body", "save")
+            ):
                 self._cache_mode = "simple"
 
     # ------------------------------- public API --------------------------- #
+
+    def _prepare_search_params(
+        self, q: str, type: Optional[str], **filters: Any
+    ) -> Dict[str, Any]:
+        """Validates and prepares parameters for the search API call."""
+        if not q:
+            raise ValueError("q (query) is required")
+
+        params: Dict[str, Any] = {"q": q}
+        if type and type.lower() != "any":
+            params["type"] = type
+
+        # Normalize boolean-like filter values
+        for k, v in filters.items():
+            if v is None:
+                continue
+            if k in ("include_pending", "with_snippets"):
+                bool_val = _to_bool(v)
+                params[k] = bool_val if bool_val is not None else v
+            else:
+                params[k] = v
+        return params
+
+    def _get_cache_headers(
+        self, path: str, params: Dict[str, Any]
+    ) -> tuple[Dict[str, str], Any]:
+        """Prepares request headers for caching and returns the cache key."""
+        headers = self._headers.copy()
+        cache_key = None
+        if not self.cache:
+            return headers, None
+
+        if self._cache_mode == "legacy":
+            cache_key = make_cache_key(f"{self.base_url}{path}", params)
+            entry = self.cache.get(cache_key, allow_expired=True)
+            if entry and getattr(entry, "etag", None):
+                headers["If-None-Match"] = entry.etag
+            return headers, entry  # Return entry for later use
+
+        if self._cache_mode == "simple":
+            try:
+                cache_key = self.cache.make_key(path, params)
+                etag = self.cache.get_etag(cache_key)
+                if etag:
+                    headers["If-None-Match"] = etag
+            except Exception:
+                return headers, None  # Ignore cache on error
+
+        return headers, cache_key
+
+    def _handle_search_cache(self, resp: httpx.Response, cache_context: Any) -> None:
+        """Saves a successful search response to the cache."""
+        if not self.cache or not cache_context:
+            return
+
+        data = self._safe_json(resp)
+        etag = resp.headers.get("ETag")
+
+        if self._cache_mode == "legacy":
+            cache_key = cache_context
+            self.cache.set(cache_key, data, etag=etag)
+        elif self._cache_mode == "simple":
+            cache_key = cache_context
+            try:
+                self.cache.save(cache_key, etag=etag, body=data)
+            except Exception:
+                pass  # Ignore cache save errors
+
+    def _handle_not_modified(
+        self, cache_context: Any
+    ) -> Union[SearchResponse, Dict[str, Any]]:
+        """Handles a 304 Not Modified response by serving from cache."""
+        if self._cache_mode == "legacy" and cache_context is not None:
+            return self._parse(SearchResponse, cache_context.payload)
+
+        if self._cache_mode == "simple" and cache_context is not None:
+            try:
+                body = self.cache.get_body(cache_context)
+                if body is not None:
+                    return self._parse(SearchResponse, body)
+            except Exception:
+                pass  # Fall through if cache read fails
+
+        # This should rarely be hit, but if it is, we need to re-request
+        raise MatrixError(0, "Cache consistency error on 304 response.")
 
     def search(
         self,
@@ -229,97 +271,32 @@ class MatrixClient:
             q: free-text query (required)
             type: "agent" | "tool" | "mcp_server" | "any" (optional; "any" → omit type)
             **filters: capabilities, frameworks, providers, limit, offset, mode,
-                       with_rag, rerank, include_pending, with_snippets...
+                        with_rag, rerank, include_pending, with_snippets...
         """
-        if not q:
-            raise ValueError("q (query) is required")
-
-        # Base params
-        params: Dict[str, Any] = {"q": q}
-
-        # Treat type="any" (or empty) as no filter to search across all entity types
-        if type and type not in ("", "any"):
-            params["type"] = type
-
-        # Normalize booleans for common flags if they arrive as strings
-        normalized: Dict[str, Any] = {}
-        for k, v in filters.items():
-            if v is None:
-                continue
-            if k in ("include_pending", "with_snippets"):
-                b = _to_bool(v)
-                normalized[k] = b if b is not None else v
-            else:
-                normalized[k] = v
-        params.update(normalized)
-
+        params = self._prepare_search_params(q, type, **filters)
         path = "/catalog/search"
-        url = f"{self.base_url}{path}"
-
-        # Optional cache: add If-None-Match and handle 304
-        headers = dict(self._headers)
-
-        # Compute key depending on available cache style
-        cache_key: Optional[str] = None
-        legacy_entry = None
-        if self.cache and self._cache_mode == "legacy":
-            cache_key = make_cache_key(url, params)  # type: ignore[arg-type]
-            legacy_entry = self.cache.get(cache_key, allow_expired=True)  # type: ignore[attr-defined]
-            if legacy_entry and getattr(legacy_entry, "etag", None):
-                headers["If-None-Match"] = legacy_entry.etag
-        elif self.cache and self._cache_mode == "simple":
-            # new simple style: use cache.make_key and cache.get_etag
-            try:
-                cache_key = self.cache.make_key(path, params)  # type: ignore[attr-defined]
-                et = self.cache.get_etag(cache_key)            # type: ignore[attr-defined]
-                if et:
-                    headers["If-None-Match"] = et
-            except Exception:
-                cache_key = None  # ignore cache if anything goes wrong
+        headers, cache_context = self._get_cache_headers(path, params)
 
         try:
             resp = self._request("GET", path, params=params, headers=headers)
-            # Serve from cache if server says Not Modified
-            if resp.status_code == 304 and self.cache and cache_key:
-                if self._cache_mode == "legacy" and legacy_entry is not None:
-                    return self._parse(SearchResponse, legacy_entry.payload)
-                if self._cache_mode == "simple":
-                    try:
-                        body = self.cache.get_body(cache_key)  # type: ignore[attr-defined]
-                        if body is not None:
-                            return self._parse(SearchResponse, body)
-                    except Exception:
-                        pass
 
-            data = self._safe_json(resp)
+            if resp.status_code == 304:
+                return self._handle_not_modified(cache_context)
 
-            # Save new body & ETag
-            if self.cache and cache_key:
-                if self._cache_mode == "legacy":
-                    self.cache.set(cache_key, data, etag=resp.headers.get("ETag"))  # type: ignore[attr-defined]
-                elif self._cache_mode == "simple":
-                    try:
-                        self.cache.save(cache_key, etag=resp.headers.get("ETag"), body=data)  # type: ignore[attr-defined]
-                    except Exception:
-                        pass
-
-            return self._parse(SearchResponse, data)
+            self._handle_search_cache(resp, cache_context)
+            return self._parse(SearchResponse, self._safe_json(resp))
 
         except httpx.RequestError as e:
-            # Network issue; try to serve a fresh cached value if within TTL
-            if self.cache:
-                if self._cache_mode == "legacy" and cache_key:
-                    fresh = self.cache.get(cache_key, allow_expired=False)  # type: ignore[attr-defined]
+            # On network error, try serving from cache as a last resort
+            if self.cache and cache_context:
+                if self._cache_mode == "legacy":
+                    fresh = self.cache.get(cache_context, allow_expired=False)
                     if fresh:
                         return self._parse(SearchResponse, fresh.payload)
-                elif self._cache_mode == "simple" and cache_key:
-                    try:
-                        body = self.cache.get_body(cache_key)  # type: ignore[attr-defined]
-                        if body is not None:
-                            return self._parse(SearchResponse, body)
-                    except Exception:
-                        pass
-            raise SDKError(0, str(e)) from e
+                elif self._cache_mode == "simple":
+                    return self._handle_not_modified(cache_context)
+
+            raise MatrixError(0, str(e)) from e
 
     def get_entity(self, id: str) -> Union[EntityDetail, Dict[str, Any]]:
         """
@@ -428,7 +405,7 @@ class MatrixClient:
                 return self._safe_json(resp)
             except Exception:
                 return {"ok": True}
-        except SDKError as e:
+        except MatrixError as e:
             if e.args and "failed" in e.args[0].lower():
                 # Fall through to POST shim below
                 pass
@@ -437,7 +414,9 @@ class MatrixClient:
                 raise
 
         # Fallback to POST shim
-        resp = self._request("POST", "/catalog/remotes", json_body={"url": url, "op": "delete"})
+        resp = self._request(
+            "POST", "/catalog/remotes", json_body={"url": url, "op": "delete"}
+        )
         return self._safe_json(resp)
 
     def trigger_ingest(self, name: str) -> Dict[str, Any]:
@@ -473,12 +452,14 @@ class MatrixClient:
         """
         url = self.manifest_url(id)
         if not url:
-            raise SDKError(404, "Manifest URL not found")
+            raise MatrixError(404, "Manifest URL not found")
         try:
-            with httpx.Client(timeout=self.timeout, headers={"Accept": "application/json"}) as client:
+            with httpx.Client(
+                timeout=self.timeout, headers={"Accept": "application/json"}
+            ) as client:
                 resp = client.get(url)
         except httpx.RequestError as e:
-            raise SDKError(0, str(e)) from e
+            raise MatrixError(0, str(e)) from e
 
         ctype = (resp.headers.get("content-type") or "").lower()
         if "application/json" in ctype or ctype.endswith("+json"):
@@ -487,9 +468,10 @@ class MatrixClient:
         # Best-effort YAML
         try:
             import yaml  # optional dependency
+
             return yaml.safe_load(resp.text)  # type: ignore[no-any-return]
         except Exception:
-            raise SDKError(415, "Unsupported manifest content type")
+            raise MatrixError(415, "Unsupported manifest content type")
 
     # ------------------------------ internals ------------------------------ #
 
@@ -516,7 +498,7 @@ class MatrixClient:
                 resp = client.request(method, url, params=params, json=json_body)
         except httpx.RequestError as e:
             # surfacing transport errors (DNS, timeouts, TLS, etc.)
-            raise SDKError(0, str(e)) from e
+            raise MatrixError(0, str(e)) from e
 
         if resp.status_code not in expected:
             # Try decoding body for better diagnostics
@@ -525,7 +507,7 @@ class MatrixClient:
                 body = resp.json()
             except json.JSONDecodeError:
                 body = resp.text
-            raise SDKError(
+            raise MatrixError(
                 resp.status_code,
                 f"{method} {path} failed ({resp.status_code}) — {body!r}",
             )

@@ -14,7 +14,9 @@ from .probe import probe_capabilities
 from .utils import load_env_file, make_idempotency_key
 
 
-async def _register_source(client: GatewayAdminClient, source: Dict[str, Any], *, probe: bool) -> List[Any]:
+async def _register_source(
+    client: GatewayAdminClient, source: Dict[str, Any], *, probe: bool
+) -> List[Any]:
     manifests = discover_manifests_from_source(source)
     results: List[Any] = []
 
@@ -36,8 +38,15 @@ async def _run(args: argparse.Namespace) -> int:
     load_env_file(args.env_file or os.getenv("ENV_FILE"))
 
     base = args.gateway_url or os.getenv("GATEWAY_URL", "http://localhost:4444")
-    token = args.token or os.getenv("ADMIN_TOKEN") or os.getenv("GATEWAY_TOKEN") or os.getenv("GATEWAY_ADMIN_TOKEN")
-    probe = not args.no_probe and (os.getenv("PROBE", "true").lower() in {"1", "true", "yes", "on"})
+    token = (
+        args.token
+        or os.getenv("ADMIN_TOKEN")
+        or os.getenv("GATEWAY_TOKEN")
+        or os.getenv("GATEWAY_ADMIN_TOKEN")
+    )
+    probe = not args.no_probe and (
+        os.getenv("PROBE", "true").lower() in {"1", "true", "yes", "on"}
+    )
 
     sources: List[Dict[str, Any]] = []
     if args.zip:
@@ -74,21 +83,31 @@ async def _run(args: argparse.Namespace) -> int:
     ok = sum(1 for r in results if not (isinstance(r, dict) and r.get("error")))
     fail = len(results) - ok
 
-    print(json.dumps({"summary": {"ok": ok, "fail": fail}, "results": results}, indent=2))
+    print(
+        json.dumps({"summary": {"ok": ok, "fail": fail}, "results": results}, indent=2)
+    )
     return 0 if fail == 0 else 2
 
 
 def run_cli(argv: List[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Discover and register MCP servers (matrix-first)")
+    parser = argparse.ArgumentParser(
+        description="Discover and register MCP servers (matrix-first)"
+    )
     parser.add_argument("--zip", help="Path to local ZIP archive")
     parser.add_argument("--dir", help="Path to local directory (already checked out)")
     parser.add_argument("--git", help="Git repo URL")
     parser.add_argument("--ref", default="main", help="Git ref (branch/tag)")
 
-    parser.add_argument("--gateway-url", default=os.getenv("GATEWAY_URL", "http://localhost:4444"))
+    parser.add_argument(
+        "--gateway-url", default=os.getenv("GATEWAY_URL", "http://localhost:4444")
+    )
     parser.add_argument("--token", help="Admin token (Bearer)")
-    parser.add_argument("--concurrency", type=int, default=int(os.getenv("CONCURRENCY", "10")))
-    parser.add_argument("--no-probe", action="store_true", help="Disable capability probing")
+    parser.add_argument(
+        "--concurrency", type=int, default=int(os.getenv("CONCURRENCY", "10"))
+    )
+    parser.add_argument(
+        "--no-probe", action="store_true", help="Disable capability probing"
+    )
     parser.add_argument("--env-file", help="Optional .env file to load first")
 
     args = parser.parse_args(argv)

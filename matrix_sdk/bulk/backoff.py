@@ -24,7 +24,9 @@ def with_backoff(
                     attempt += 1
                     if attempt > max_retries:
                         raise
-                    delay = base_delay * (2 ** (attempt - 1)) + random.uniform(0, jitter)
+                    delay = base_delay * (2 ** (attempt - 1)) + random.uniform(
+                        0, jitter
+                    )
                     await asyncio.sleep(delay)
 
         return wrapper

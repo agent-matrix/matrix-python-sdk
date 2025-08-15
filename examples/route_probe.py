@@ -41,7 +41,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
-from matrix_sdk import MatrixClient, SDKError
+from matrix_sdk import MatrixClient, MatrixError
 
 
 # ---------------------------- small helpers ----------------------------------
@@ -181,7 +181,7 @@ def probe_search(client: MatrixClient, *, q: str, typ: Optional[str], limit: int
         )
         _ok(f"search: q={q!r}, type={typ or 'any'} → total={total}, showing {min(limit, len(items))}")
         return items, int(total or 0)
-    except SDKError as e:
+    except MatrixError as e:
         _err(f"search failed (HTTP {e.status}): {e.detail or ''}")
         return [], 0
 
@@ -193,7 +193,7 @@ def probe_entity(client: MatrixClient, id: str) -> Optional[Dict[str, Any]]:
         name = ed.get("name") or "(no name)"
         _ok(f"entity: {id} → name={name!r}")
         return ed
-    except SDKError as e:
+    except MatrixError as e:
         _err(f"entity failed (HTTP {e.status}): {e.detail or ''}")
         return None
 
@@ -211,11 +211,11 @@ def probe_manifest(client: MatrixClient, id: str, fetch: bool = True) -> Optiona
                 _ok(f"fetch_manifest: type={t}, name={name}, keys={keys[:10]}{'…' if len(keys) > 10 else ''}")
                 if not t or not name:
                     _warn("fetch_manifest: manifest missing 'type'/'name' — this may be a placeholder, proxy, or non-standard file.")
-            except SDKError as e:
+            except MatrixError as e:
                 # Resolver works but fetch might fail (e.g., auth, 404)
                 _warn(f"fetch_manifest failed (HTTP {e.status}): {e.detail or ''}")
         return url
-    except SDKError as e:
+    except MatrixError as e:
         _err(f"manifest_url failed (HTTP {e.status}): {e.detail or ''}")
         return None
 
@@ -231,8 +231,8 @@ def probe_install(client: MatrixClient, *, id: Optional[str], manifest_url: Opti
             od = _to_dict(out)
             steps = [r.get("step") for r in od.get("results", []) if isinstance(r, dict)]
             _ok(f"install (inline) succeeded; steps={steps or '[]'}")
-        except (RuntimeError, SDKError) as e:
-            if isinstance(e, SDKError):
+        except (RuntimeError, MatrixError) as e:
+            if isinstance(e, MatrixError):
                 reason = _extract_reason(e.detail or "") or e.detail or "install failed"
                 _warn(f"install (inline) failed (HTTP {e.status}): {reason}")
             else:
@@ -248,7 +248,7 @@ def probe_install(client: MatrixClient, *, id: Optional[str], manifest_url: Opti
         od = _to_dict(out)
         steps = [r.get("step") for r in od.get("results", []) if isinstance(r, dict)]
         _ok(f"install (catalog) succeeded; steps={steps or '[]'}")
-    except SDKError as e:
+    except MatrixError as e:
         reason = _extract_reason(e.detail or "") or e.detail or "install failed"
         _warn(f"install (catalog) failed (HTTP {e.status}): {reason}")
 
@@ -264,7 +264,7 @@ def probe_remotes_and_ingest(base_client: MatrixClient, *, remote_url: str, remo
         lr = base_client.list_remotes()
         total = len(lr) if isinstance(lr, list) else (len(lr.get("items", [])) if isinstance(lr, dict) else 0)
         _ok(f"remotes list → {total} remotes")
-    except SDKError as e:
+    except MatrixError as e:
         if e.status in (404, 405):
             _warn(f"remotes endpoints not exposed on this Hub (HTTP {e.status}); skipping remotes/add/ingest/delete probes.")
             return
@@ -275,7 +275,7 @@ def probe_remotes_and_ingest(base_client: MatrixClient, *, remote_url: str, remo
     try:
         base_client.add_remote(remote_url, name=name)
         _ok(f"add_remote '{name}' ok")
-    except SDKError as e:
+    except MatrixError as e:
         _err(f"add_remote failed (HTTP {e.status}): {e.detail or ''}")
         return
 
@@ -283,7 +283,7 @@ def probe_remotes_and_ingest(base_client: MatrixClient, *, remote_url: str, remo
     try:
         base_client.trigger_ingest(name)
         _ok(f"trigger_ingest '{name}' ok")
-    except SDKError as e:
+    except MatrixError as e:
         _warn(f"trigger_ingest failed for '{name}' (HTTP {e.status}): {e.detail or ''}")
 
     # small pause; some hubs enqueue ingest
@@ -293,7 +293,7 @@ def probe_remotes_and_ingest(base_client: MatrixClient, *, remote_url: str, remo
     try:
         base_client.delete_remote(remote_url)
         _ok(f"delete_remote '{name}' ok (by URL)")
-    except SDKError as e:
+    except MatrixError as e:
         _warn(f"delete_remote by URL failed (HTTP {e.status}); Hub may require deletion by name. Skipping cleanup.")
 
 

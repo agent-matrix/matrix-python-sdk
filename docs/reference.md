@@ -66,12 +66,12 @@ class MatrixClient:
 ### Error type
 
 ```python
-class SDKError(Exception):
+class MatrixError(Exception):
     def __init__(self, status: int, detail: str | None = None): ...
 ```
 
-* Non-2xx HTTP → `SDKError(status, detail)`
-* Timeouts / network issues → `SDKError(status=0, detail=...)`
+* Non-2xx HTTP → `MatrixError(status, detail)`
+* Timeouts / network issues → `MatrixError(status=0, detail=...)`
 
 ---
 

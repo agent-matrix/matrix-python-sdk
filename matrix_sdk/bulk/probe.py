@@ -6,7 +6,9 @@ from typing import Any, Dict
 import httpx
 
 
-def probe_capabilities(manifest: Dict[str, Any], timeout: float = 5.0) -> Dict[str, Any]:
+def probe_capabilities(
+    manifest: Dict[str, Any], timeout: float = 5.0
+) -> Dict[str, Any]:
     """Best-effort capability probe. Non-fatal on errors.
 
     If endpoint.transport is http/sse and exposes `/capabilities`, try to fetch

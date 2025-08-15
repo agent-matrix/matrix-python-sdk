@@ -26,7 +26,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
-from matrix_sdk import MatrixClient, SDKError
+from matrix_sdk import MatrixClient, MatrixError
 
 
 def _to_dict(obj: Any) -> Dict[str, Any]:
@@ -274,7 +274,7 @@ def main() -> None:
             print(f"\nInstalling first item: {first_id}")
             try:
                 out = hub.install(id=first_id, target="./.matrix/runners/demo")
-            except SDKError as e:
+            except MatrixError as e:
                 # Non-fatal: report and continue with diagnostics
                 status = getattr(e, "status", None)
                 detail = getattr(e, "detail", None) or str(e)
@@ -299,9 +299,9 @@ def main() -> None:
 if __name__ == "__main__":  # pragma: no cover
     try:
         main()
-    except SDKError as e:
+    except MatrixError as e:
         status = getattr(e, "status", None)
         detail = getattr(e, "detail", None) or str(e)
-        print(f"SDKError: HTTP {status} — {detail}")
+        print(f"MatrixError: HTTP {status} — {detail}")
     except Exception as e:
         print(f"Unexpected error: {e}")

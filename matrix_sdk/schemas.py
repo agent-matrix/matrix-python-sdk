@@ -212,9 +212,13 @@ class MatrixAPIError(RuntimeError):
 
         self.status_code = sc
         # Prefer explicit body; otherwise stash the textual detail for callers
-        self.body = b if b is not None else ({"detail": det} if det is not None else None)
+        self.body = (
+            b if b is not None else ({"detail": det} if det is not None else None)
+        )
 
         super().__init__(msg)
 
     def __repr__(self) -> str:  # pragma: no cover
-        return f"MatrixAPIError(status_code={self.status_code}, message={self.args[0]!r})"
+        return (
+            f"MatrixAPIError(status_code={self.status_code}, message={self.args[0]!r})"
+        )

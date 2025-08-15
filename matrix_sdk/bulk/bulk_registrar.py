@@ -8,14 +8,18 @@ from typing import Any, Dict, Iterable, List, Optional, Union
 
 from pydantic import BaseModel
 
-from .gateway import GatewayAdminClient                # <-- fixed import
-from .models import ServerManifest                     # <-- fixed import
 from .discovery import discover_manifests_from_source  # matrix-first discovery
+from .gateway import GatewayAdminClient  # <-- fixed import
+from .models import ServerManifest  # <-- fixed import
+
 try:
     from .probe import probe_capabilities
 except Exception:
+
     def probe_capabilities(manifest: Dict[str, Any]) -> Dict[str, Any]:
         return manifest
+
+
 from .backoff import with_backoff
 from .utils import make_idempotency_key
 
@@ -33,7 +37,7 @@ def _jsonable(obj: Union[ServerManifest, BaseModel, Dict[str, Any]]) -> Dict[str
     try:
         return json.loads(obj.model_dump_json(by_alias=True, exclude_none=True))  # type: ignore[attr-defined]
     except Exception:
-        return json.loads(obj.json(by_alias=True, exclude_none=True))             # type: ignore[attr-defined]
+        return json.loads(obj.json(by_alias=True, exclude_none=True))  # type: ignore[attr-defined]
 
 
 class BulkRegistrar:
@@ -81,7 +85,12 @@ class BulkRegistrar:
         """Discover 0..N manifests from a single source and upsert them."""
         manifests = discover_manifests_from_source(source)
         if not manifests:
-            return [{"warning": "no manifests discovered", "source": {k: v for k, v in source.items() if k != 'token'}}]
+            return [
+                {
+                    "warning": "no manifests discovered",
+                    "source": {k: v for k, v in source.items() if k != "token"},
+                }
+            ]
 
         tasks: List["asyncio.Task[Any]"] = []
         for m in manifests:
@@ -110,6 +119,7 @@ class BulkRegistrar:
             async def _worker(s: Dict[str, Any]) -> List[Any]:
                 async with self.sema:
                     return await self._process_source(s)
+
             tasks.append(asyncio.create_task(_worker(src)))
 
         grouped = await asyncio.gather(*tasks, return_exceptions=True)
