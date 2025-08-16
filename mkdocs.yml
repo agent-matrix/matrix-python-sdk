@@ -10,6 +10,8 @@ nav:
   - Home: index.md
   - Installation: install.md
   - Usage Examples: usage.md
+  - API:
+      - Overview: api.md
   - Bulk Registration: bulk.md
   - API Reference: reference.md
   - Configuration: config.md
