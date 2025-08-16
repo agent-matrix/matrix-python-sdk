@@ -1,4 +1,3 @@
-```markdown
 # matrix-python-sdk
 
 **matrix-python-sdk** is the official Python SDK for [Matrix Hub](https://github.com/agent-matrix/matrix-hub) — a catalog and installer for agents, tools, and MCP servers.
