@@ -12,6 +12,17 @@ version = "0.1.1"
 description = "Python SDK for Matrix Hub — catalog search, entity detail, install, and remote management for agents, tools, and MCP servers."
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
+
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Typing :: Typed",
+]
 license = { text = "Apache-2.0" }
 authors = [
     { name = "Agent Matrix", email = "dev@agent-matrix.example" }
