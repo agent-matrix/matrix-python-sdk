@@ -1,4 +1,3 @@
-```markdown
 # Usage
 
 This guide covers common tasks using `MatrixClient` and (optionally) the bulk registrar for Gateways.
