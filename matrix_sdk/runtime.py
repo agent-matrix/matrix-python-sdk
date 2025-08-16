@@ -5,7 +5,7 @@ import json
 import logging
 import os
 import signal
-import socket  # --- NEW: Import socket to check ports ---
+import socket
 import subprocess
 import time
 from dataclasses import asdict, dataclass
@@ -13,37 +13,23 @@ from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
 import httpx
+
 from .policy import default_port
 
-# --- IMPROVEMENT: Centralized, consistent logging ---
+# --------------------------------------------------------------------------------------
+# Module Setup
+# --------------------------------------------------------------------------------------
 logger = logging.getLogger("matrix_sdk.runtime")
 
-def _maybe_configure_logging() -> None:
-    # Mirrors the setup in other SDK modules for consistency.
-    dbg = (os.getenv("MATRIX_SDK_DEBUG") or "").strip().lower()
-    if dbg in ("1", "true", "yes", "on"):
-        if not logger.handlers:
-            handler = logging.StreamHandler()
-            handler.setFormatter(
-                logging.Formatter("[matrix-sdk][runtime] %(levelname)s: %(message)s")
-            )
-            logger.addHandler(handler)
-        logger.setLevel(logging.DEBUG)
-
-_maybe_configure_logging()
-
-# --- IMPROVEMENT: Encapsulated path management ---
 HOME = Path(os.getenv("MATRIX_HOME") or (Path.home() / ".matrix")).expanduser()
 STATE_DIR = HOME / "state"
 LOGS_DIR = HOME / "logs"
 
-for d in (STATE_DIR, LOGS_DIR):
-    d.mkdir(parents=True, exist_ok=True)
 
-# --- IMPROVEMENT: Clearer data structures ---
 @dataclass(frozen=True)
 class LockInfo:
     """Represents the contents of a .lock file for a running process."""
+
     pid: int
     port: Optional[int]
     alias: str
@@ -51,39 +37,116 @@ class LockInfo:
     started_at: float
     runner_path: str
 
-# --- NEW: Helper function to check port availability ---
+
+def _maybe_configure_logging() -> None:
+    """Attaches a handler to the logger if MATRIX_SDK_DEBUG is set."""
+    dbg = (os.getenv("MATRIX_SDK_DEBUG") or "").strip().lower()
+    if dbg in ("1", "true", "yes", "on") and not logger.handlers:
+        handler = logging.StreamHandler()
+        formatter = logging.Formatter(
+            "[matrix-sdk][runtime] %(levelname)s: %(message)s"
+        )
+        handler.setFormatter(formatter)
+        logger.addHandler(handler)
+        logger.setLevel(logging.DEBUG)
+
+
+_maybe_configure_logging()
+for d in (STATE_DIR, LOGS_DIR):
+    d.mkdir(parents=True, exist_ok=True)
+
+# --------------------------------------------------------------------------------------
+# Private Helper Functions
+# --------------------------------------------------------------------------------------
+
+
+def _get_lock_path(alias: str) -> Path:
+    """Returns the standardized path to the lock file for an alias."""
+    return STATE_DIR / alias / "runner.lock.json"
+
+
+def _load_lock_info(alias: str) -> Optional[LockInfo]:
+    """Safely loads and parses a lock file into a LockInfo object."""
+    lock_path = _get_lock_path(alias)
+    if not lock_path.is_file():
+        return None
+    try:
+        data = json.loads(lock_path.read_text(encoding="utf-8"))
+        return LockInfo(**data)
+    except (json.JSONDecodeError, TypeError) as e:
+        logger.error("runtime: could not parse lock file for alias '%s': %s", alias, e)
+        return None
+
+
 def _is_port_available(port: int) -> bool:
     """Checks if a TCP port is available to bind to on localhost."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         try:
-            # Try to bind to the port. If it succeeds, the port is free.
             s.bind(("127.0.0.1", port))
             return True
         except OSError:
-            # The port is already in use.
             return False
 
-def _get_python_executable(target_path: Path, runner_data: Dict[str, Any]) -> str:
-    """
-    Determines the absolute path to the Python executable within the project's
-    virtual environment. Fails if it's not found.
-    """
-    venv_dir_name = runner_data.get("python", {}).get("venv", ".venv")
-    venv_path = target_path / venv_dir_name
-    py_exe = venv_path / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
 
+def _find_available_port(start_port: int, max_retries: int = 100) -> int:
+    """Finds the next available TCP port starting from a given port."""
+    port = start_port
+    for _ in range(max_retries):
+        if _is_port_available(port):
+            if port != start_port:
+                logger.warning(
+                    "runtime: Port %d was occupied. Switched to next available: %d",
+                    start_port,
+                    port,
+                )
+            return port
+        port += 1
+    raise RuntimeError(
+        f"Could not find an available port after trying {max_retries} ports "
+        f"from {start_port}."
+    )
+
+
+def _get_python_executable(target_path: Path, runner_data: Dict[str, Any]) -> str:
+    """Determines the absolute path to the venv Python, failing if not found."""
+    venv_dir = runner_data.get("python", {}).get("venv", ".venv")
+    py_exe = (
+        target_path
+        / venv_dir
+        / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    )
     if py_exe.is_file():
         logger.debug("runtime: found venv python executable at %s", py_exe)
         return str(py_exe)
+    raise FileNotFoundError(f"Python executable not found in venv path: {py_exe}")
 
-    raise FileNotFoundError(
-        f"Python executable not found in expected venv path: {py_exe}. "
-        "Ensure the environment was prepared correctly."
-    )
+
+def _build_command(target_path: Path, runner: Dict[str, Any]) -> List[str]:
+    """Constructs the command list for launching the server process."""
+    entry = runner.get("entry")
+    if not entry:
+        raise ValueError("runner.json is missing the required 'entry' field")
+
+    runner_type = (runner.get("type") or "").lower()
+    if runner_type == "python":
+        python_executable = _get_python_executable(target_path, runner)
+        return [python_executable, entry]
+    if runner_type == "node":
+        node_executable = os.environ.get("NODE", "node")
+        return [node_executable, entry]
+
+    raise RuntimeError(f"Unsupported runner type: '{runner_type}'")
+
+
+# --------------------------------------------------------------------------------------
+# Public API
+# --------------------------------------------------------------------------------------
+
 
 def log_path(alias: str) -> str:
     """Returns the standardized path to the log file for an alias."""
     return str(LOGS_DIR / f"{alias}.log")
+
 
 def start(
     target: str, *, alias: Optional[str] = None, port: Optional[int] = None
@@ -91,64 +154,31 @@ def start(
     """Starts a server process, finding an available port if necessary."""
     target_path = Path(target).expanduser().resolve()
     alias = alias or target_path.name
-    lock_path = STATE_DIR / alias / "runner.lock.json"
+    lock_path = _get_lock_path(alias)
 
     if lock_path.exists():
-        raise RuntimeError(f"Lock file already exists for alias '{alias}' at {lock_path}")
+        raise RuntimeError(f"Lock file already exists for alias '{alias}'")
 
     runner_path = target_path / "runner.json"
-    if not runner_path.exists():
-        raise FileNotFoundError(f"Cannot start server: runner.json not found in {target_path}")
+    if not runner_path.is_file():
+        raise FileNotFoundError(f"runner.json not found in {target_path}")
 
     runner = json.loads(runner_path.read_text(encoding="utf-8"))
-    entry = runner.get("entry")
-    if not entry:
-        raise ValueError("runner.json is missing the required 'entry' field")
-
-    runner_type = (runner.get("type") or "").lower()
-    command: List[str]
-
-    if runner_type == "python":
-        python_executable = _get_python_executable(target_path, runner)
-        command = [python_executable, entry]
-    elif runner_type == "node":
-        node_executable = os.environ.get("NODE", "node")
-        command = [node_executable, entry]
-    else:
-        raise RuntimeError(f"Unsupported runner type: '{runner_type}'")
-
-    # --- MODIFIED: Find an available port before starting ---
-    initial_port = port or default_port()
-    effective_port = initial_port
-    max_retries = 100  # Prevent an infinite loop
-
-    for i in range(max_retries):
-        if _is_port_available(effective_port):
-            break  # Found a free port
-        logger.debug("runtime: Port %d is occupied, trying next.", effective_port)
-        effective_port += 1
-    else:
-        # This 'else' runs if the loop finishes without a 'break'
-        raise RuntimeError(f"Could not find an available port after trying {max_retries} ports from {initial_port}.")
-
-    if effective_port != initial_port:
-        logger.warning(
-            "runtime: Port %d was occupied. Switched to the next available port: %d",
-            initial_port,
-            effective_port,
-        )
+    command = _build_command(target_path, runner)
+    effective_port = _find_available_port(port or default_port())
 
     env = os.environ.copy()
-    env.update(runner.get("env") or {})
-    env["PORT"] = str(effective_port) # Use the final, available port
-    
-    # Spawn the process
+    env.update(runner.get("env", {}))
+    env["PORT"] = str(effective_port)
+
     logf_path = Path(log_path(alias))
-    logger.info("runtime: starting server for alias '%s'. Command: `%s`", alias, " ".join(command))
-    logger.info("runtime: logs will be written to %s", logf_path)
-    
+    logger.info("runtime: starting '%s' with command: `%s`", alias, " ".join(command))
+    logger.info("runtime: logs at %s", logf_path)
+
     with open(logf_path, "ab") as log_file:
-        child = subprocess.Popen(command, cwd=str(target_path), env=env, stdout=log_file, stderr=log_file)
+        child = subprocess.Popen(
+            command, cwd=target_path, env=env, stdout=log_file, stderr=log_file
+        )
 
     lock_info = LockInfo(
         alias=alias,
@@ -158,104 +188,111 @@ def start(
         target=str(target_path),
         runner_path=str(runner_path),
     )
-
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     lock_path.write_text(json.dumps(asdict(lock_info), indent=2), encoding="utf-8")
-    
-    logger.info("runtime: process for '%s' started with pid %d on port %d", alias, child.pid, effective_port)
+
+    logger.info(
+        "runtime: process for '%s' started with pid %d on port %d",
+        alias,
+        child.pid,
+        effective_port,
+    )
     return lock_info
+
 
 def stop(alias: str) -> bool:
     """Stops a running process by its alias."""
-    lock_path = STATE_DIR / alias / "runner.lock.json"
-    if not lock_path.exists():
-        logger.info("runtime: stop command for '%s' ignored, no lock file found.", alias)
+    lock_info = _load_lock_info(alias)
+    if not lock_info:
+        logger.info("runtime: stop for '%s' ignored; no lock file found.", alias)
         return False
 
     try:
-        data = json.loads(lock_path.read_text(encoding="utf-8"))
-        pid = int(data.get("pid", 0))
-        if not pid:
-            return False
-
-        logger.info("runtime: stopping process with pid %d for alias '%s'", pid, alias)
-        os.kill(pid, signal.SIGTERM)
+        logger.info(
+            "runtime: stopping process with pid %d for alias '%s'", lock_info.pid, alias
+        )
+        os.kill(lock_info.pid, signal.SIGTERM)
         return True
     except ProcessLookupError:
-        logger.warning("runtime: process with pid %d for alias '%s' not found.", pid, alias)
-        return True
-    except (json.JSONDecodeError, KeyError, TypeError) as e:
-        logger.error("runtime: could not parse lock file for alias '%s': %s", alias, e)
-        return False
+        logger.warning(
+            "runtime: process with pid %d for alias '%s' already gone.",
+            lock_info.pid,
+            alias,
+        )
+        return True  # The process is gone, so the goal is achieved.
     finally:
-        lock_path.unlink(missing_ok=True)
+        _get_lock_path(alias).unlink(missing_ok=True)
+
 
 def status() -> List[LockInfo]:
     """Lists the status of all running processes managed by the SDK."""
     running_processes: List[LockInfo] = []
-    if not STATE_DIR.exists():
+    if not STATE_DIR.is_dir():
         return running_processes
 
     for lock_file in STATE_DIR.glob("*/runner.lock.json"):
-        try:
-            data = json.loads(lock_file.read_text(encoding="utf-8"))
-            pid = data.get("pid")
-            if pid:
-                os.kill(pid, 0)
-            running_processes.append(LockInfo(**data))
-        except (json.JSONDecodeError, TypeError, ProcessLookupError, KeyError):
-            logger.warning("runtime: removing stale lock file: %s", lock_file)
-            lock_file.unlink(missing_ok=True)
-            continue
+        alias = lock_file.parent.name
+        if lock_info := _load_lock_info(alias):
+            try:
+                os.kill(lock_info.pid, 0)  # Check if process exists
+                running_processes.append(lock_info)
+            except ProcessLookupError:
+                logger.warning(
+                    "runtime: removing stale lock file for dead process: %s", lock_file
+                )
+                lock_file.unlink(missing_ok=True)
     return running_processes
+
 
 def tail_logs(alias: str, *, follow: bool = False, n: int = 20) -> Iterator[str]:
     """Tails the log file for a given alias."""
     p = Path(log_path(alias))
-    if not p.exists():
+    if not p.is_file():
         return
 
     with p.open("r", encoding="utf-8", errors="replace") as f:
-        if not follow:
-            lines = f.readlines()
-            for line in lines[-n:]:
+        if follow:
+            f.seek(0, 2)
+            while True:
+                line = f.readline()
+                if not line:
+                    time.sleep(0.1)
+                    continue
                 yield line
-            return
-        
-        f.seek(0, 2)
-        while True:
-            line = f.readline()
-            if not line:
-                time.sleep(0.1)
-                continue
-            yield line
+        else:
+            lines = f.readlines()
+            yield from lines[-n:]
+
 
 def doctor(alias: str, timeout: int = 5) -> Dict[str, Any]:
     """Performs a health check on a running server."""
-    lock_path = STATE_DIR / alias / "runner.lock.json"
-    if not lock_path.exists():
+    lock_info = _load_lock_info(alias)
+    if not lock_info:
         return {"status": "fail", "reason": "Server not running (no lock file)."}
 
     try:
-        data = json.loads(lock_path.read_text(encoding="utf-8"))
-        port = data.get("port")
-        pid = data.get("pid")
+        os.kill(lock_info.pid, 0)  # Check if process is alive
+        if not lock_info.port:
+            return {
+                "status": "ok",
+                "reason": f"Process {lock_info.pid} is running (no port to check).",
+            }
 
-        if pid:
-            os.kill(pid, 0)
-
-        if not port:
-            return {"status": "ok", "reason": f"Process {pid} is running (no port to check)."}
-
-        url = f"http://127.0.0.1:{port}/health"
+        url = f"http://127.0.0.1:{lock_info.port}/health"
         logger.debug("doctor: probing health at %s", url)
         with httpx.Client(timeout=timeout) as client:
             response = client.get(url)
             response.raise_for_status()
-            return {"status": "ok", "reason": f"Responded {response.status_code} from {url}"}
+            return {
+                "status": "ok",
+                "reason": f"Responded {response.status_code} from {url}",
+            }
     except ProcessLookupError:
-        return {"status": "fail", "reason": f"Process {pid} not found."}
+        return {"status": "fail", "reason": f"Process {lock_info.pid} not found."}
     except httpx.RequestError as e:
-        return {"status": "fail", "reason": f"HTTP request to health endpoint failed: {e}"}
+        return {
+            "status": "fail",
+            "reason": f"HTTP request to health endpoint failed: {e}",
+        }
     except Exception as e:
         return {"status": "fail", "reason": f"An unexpected error occurred: {e}"}

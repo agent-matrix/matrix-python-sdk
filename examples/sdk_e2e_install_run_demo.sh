@@ -68,6 +68,11 @@ echo " ALIAS    : ${ALIAS}"
 echo " LOG_TAIL : ${LOG_TAIL}"
 echo "──────────────────────────────────────────────────────────────────────────"
 echo
+# --- NEW: Clear previous logs for a clean run ---
+echo "➜ Clearing old log file to ensure a clean run..."
+LOG_FILE="${MATRIX_HOME:-$HOME/.matrix}/logs/${ALIAS}.log"
+rm -f "$LOG_FILE"
+# --- END NEW ---
 
 # --- Python driver (SDK only) ------------------------------------------------
 python - <<'PY'
