@@ -1,4 +1,3 @@
-```markdown
 # API Reference
 
 This page summarizes the primary client and data models.
