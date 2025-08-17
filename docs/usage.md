@@ -1,4 +1,4 @@
-# Usage
+# Usage (v0.1.2)
 
 This guide covers common tasks using `MatrixClient` and (optionally) the bulk registrar for Gateways.
 
@@ -7,23 +7,27 @@ This guide covers common tasks using `MatrixClient` and (optionally) the bulk re
 ## Top-5 Search
 
 ```python
-from matrix_sdk import MatrixClient
+from matrix_sdk.client import MatrixClient
 
 hub = MatrixClient(base_url="http://127.0.0.1:7300")
 
 res = hub.search(
     q="summarize pdfs",
-    type="any",            # search across all entity types
+    type="any",            # search across all entity types (omit or use "any")
     limit=5,               # Top-5 by default
-    with_snippets=True     # include short summary snippets when available
+    with_snippets=True,    # short summary snippets when the server supports them
+    with_rag=False,        # include fit_reason fragments if True and supported
+    mode="hybrid",         # "keyword" | "semantic" | "hybrid"
+    include_pending=False, # show unregistered items if True (useful in dev)
+    rerank="none",         # "none" | "llm"
 )
 
 for item in res.get("items", []):
     print(
         item.get("id"),
         item.get("name"),
-        item.get("manifest_url"),  # absolute link to the manifest
-        item.get("install_url"),   # convenience link to /catalog/install
+        item.get("manifest_url"),  # absolute link to the manifest (if provided)
+        item.get("install_url"),   # convenience link to /catalog/install (if provided)
     )
 ```
 
@@ -37,7 +41,7 @@ for item in res.get("items", []):
 ## Show Entity Details
 
 ```python
-from matrix_sdk import MatrixClient
+from matrix_sdk.client import MatrixClient
 
 hub = MatrixClient("http://127.0.0.1:7300")
 detail = hub.entity("tool:hello@0.1.0")
@@ -49,7 +53,7 @@ print(detail.get("name"), "-", detail.get("summary"))
 ## Install an Item
 
 ```python
-from matrix_sdk import MatrixClient
+from matrix_sdk.client import MatrixClient
 
 hub = MatrixClient("http://127.0.0.1:7300")
 hub.install(
@@ -67,27 +71,13 @@ The Hub returns an install plan + results (artifacts, adapters written, lockfile
 ## Manage Catalog Remotes
 
 ```python
-from matrix_sdk import MatrixClient
+from matrix_sdk.client import MatrixClient
 
 hub = MatrixClient("http://127.0.0.1:7300")
 
 print("Remotes:", hub.list_remotes())
 hub.add_remote("https://example.org/catalog/index.json", name="example")
 hub.trigger_ingest("example")
-```
-
-> Route names can be overridden via `routes={...}` in the client if your Hub uses different paths.
-
----
-
-## Manifest helpers (optional)
-
-```python
-from matrix_sdk import MatrixClient
-
-hub = MatrixClient("http://127.0.0.1:7300")
-print("Manifest URL:", hub.manifest_url("tool:hello@0.1.0"))
-doc = hub.fetch_manifest("tool:hello@0.1.0")  # requires json or pyyaml
 ```
 
 ---
@@ -159,14 +149,77 @@ python -m matrix_sdk.bulk.cli \
 ## Error handling
 
 ```python
-from matrix_sdk import MatrixClient, MatrixError
+from matrix_sdk.client import MatrixClient, MatrixError
 
 hub = MatrixClient("http://127.0.0.1:7300")
 
 try:
     hub.install(id="tool:does-not-exist@0.0.0", target="./dest")
 except MatrixError as e:
-    print("Install failed:", e.status, e.detail)
+    print("Install failed:", getattr(e, "status", None) or getattr(e, "status_code", None), e)
 ```
 
+---
 
+## Advanced search
+
+High-level helpers around `GET /catalog/search` with normalization, tiny retries, and optional mode fallbacks.
+
+```python
+from matrix_sdk.client import MatrixClient
+from matrix_sdk.search import search, SearchOptions, search_try_modes
+
+hub = MatrixClient("http://127.0.0.1:7300")
+
+# 1) Hybrid (default) with safe fallbacks; returns dict by default
+res = search(
+    hub, "summarize pdfs",
+    type="any",
+    limit=5,
+    with_snippets=True,          # ask server for snippets if supported
+    include_pending=True         # show not-yet-registered entities (useful in dev)
+)
+for it in res.get("items", []):
+    print(it.get("id"), it.get("name"))
+
+# 2) Semantic-first, typed result (Pydantic SearchResponse), with small retries
+res_typed = search(
+    hub, "chat with PDFs",
+    type="agent",
+    mode="semantic",
+    options=SearchOptions(as_model=True, max_attempts=3)
+)
+print(res_typed.total, [item.id for item in res_typed.items])
+
+# 3) Filters can be CSV or lists/sets (auto-normalized to CSV)
+res = search(
+    hub, "assistant",
+    capabilities=["rag", "sql"],     # list → CSV
+    frameworks="langchain,litellm",  # CSV is fine too
+    providers={"self", "acme-inc"},  # set → CSV
+    limit=10
+)
+
+# 4) Try specific modes without fallbacks (diagnostics/benchmarks)
+for mode, payload in search_try_modes(
+    hub, "hello", modes=("keyword", "semantic", "hybrid"), type="any", limit=5
+):
+    items = payload.get("items", [])
+    print(mode, len(items))
+```
+
+**Notes**
+
+* Filters (`capabilities/frameworks/providers`) accept CSV or iterables; they’re normalized to CSV.
+* `limit` is clamped to the server’s bounds (1..100).
+* Mode fallback sequence is sensible by default (e.g., semantic → hybrid → keyword) and can be overridden via `SearchOptions(fallback_order=...)`.
+* Returns a `dict` by default. Use `SearchOptions(as_model=True)` for a typed `SearchResponse`.
+
+---
+
+### What changed vs prior docs
+
+* Updated to **v0.1.2**.
+* Search examples now include `with_rag` and `rerank`.
+* Removed deprecated “Manifest helpers” section and client route-override notes.
+* Bulk registrar remains supported.

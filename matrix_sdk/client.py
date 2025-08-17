@@ -457,3 +457,143 @@ class MatrixClient:
             except Exception:
                 return data
         return data
+
+
+# ---------------------------------------------------------------------------
+# APPEND-ONLY COMPATIBILITY & NEW CONVENIENCE METHODS
+# ---------------------------------------------------------------------------
+
+# 1) Soft-route variants that try both legacy and modern endpoints without
+#    changing existing list/add/delete/trigger methods.
+
+
+def _try_json(resp: httpx.Response) -> Any:
+    try:
+        return resp.json()
+    except Exception:
+        return resp.text
+
+
+def _request_raw(
+    client: MatrixClient, method: str, path: str, **kw: Any
+) -> httpx.Response:
+    return client._request(method, path, **kw)  # reuse private—append-only helper
+
+
+def list_remotes_any(self: MatrixClient) -> Dict[str, Any]:
+    """Try /catalog/remotes then /remotes; return {} if both 404.
+    Does not alter existing list_remotes().
+    """
+    try:
+        return self.list_remotes()
+    except MatrixError as e:
+        if getattr(e, "status", 0) == 404:
+            resp = _request_raw(self, "GET", "/remotes")
+            if resp.status_code == 404:
+                return {}
+            if 200 <= resp.status_code < 300:
+                return _try_json(resp)
+        raise
+
+
+def add_remote_any(
+    self: MatrixClient, url: str, *, name: Optional[str] = None
+) -> Dict[str, Any]:
+    """Try /catalog/remotes then /remotes; returns normal body on success."""
+    try:
+        return self.add_remote(url, name=name)
+    except MatrixError as e:
+        if getattr(e, "status", 0) == 404:
+            payload: Dict[str, Any] = {"url": url}
+            if name:
+                payload["name"] = name
+            resp = _request_raw(self, "POST", "/remotes", json_body=payload)
+            if 200 <= resp.status_code < 300:
+                return _try_json(resp)
+        raise
+
+
+def delete_remote_any(self: MatrixClient, url: str) -> Dict[str, Any]:
+    """Try DELETE /catalog/remotes, fallback to POST shim, then try /remotes."""
+    try:
+        return self.delete_remote(url)
+    except MatrixError as e:
+        if getattr(e, "status", 0) == 404:
+            # attempt DELETE on /remotes
+            try:
+                resp = _request_raw(self, "DELETE", "/remotes", json_body={"url": url})
+                if 200 <= resp.status_code < 300 or resp.status_code == 204:
+                    return _try_json(resp) if resp.content else {"ok": True}
+            except MatrixError:
+                pass
+            # attempt POST shim on /remotes
+            resp = _request_raw(
+                self, "POST", "/remotes", json_body={"url": url, "op": "delete"}
+            )
+            if 200 <= resp.status_code < 300:
+                return _try_json(resp)
+        raise
+
+
+def trigger_ingest_any(self: MatrixClient, name: str) -> Dict[str, Any]:
+    """Try /catalog/ingest?remote=NAME then /ingest/{name}."""
+    try:
+        return self.trigger_ingest(name)
+    except MatrixError as e:
+        if getattr(e, "status", 0) == 404:
+            # try RESTful style
+            resp = _request_raw(
+                self,
+                "POST",
+                f"/ingest/{quote(name, safe='')}",
+                json_body={"name": name},
+            )
+            if 200 <= resp.status_code < 300:
+                return _try_json(resp)
+        raise
+
+
+# Bind as methods without altering existing ones
+MatrixClient.list_remotes_any = list_remotes_any  # type: ignore[attr-defined]
+MatrixClient.add_remote_any = add_remote_any  # type: ignore[attr-defined]
+MatrixClient.delete_remote_any = delete_remote_any  # type: ignore[attr-defined]
+MatrixClient.trigger_ingest_any = trigger_ingest_any  # type: ignore[attr-defined]
+
+
+# 2) Tiny conveniences that don't change existing behavior
+
+
+def search_top5(
+    self: MatrixClient,
+    q: str,
+    *,
+    type: Optional[str] = None,
+    with_snippets: bool = True,
+) -> Any:
+    """Convenience: perform a Top-5 search with snippets (does not change search())."""
+    return self.search(q=q, type=type, limit=5, with_snippets=with_snippets)
+
+
+MatrixClient.search_top5 = search_top5  # type: ignore[attr-defined]
+
+
+# 3) Health/config helpers (harmless additions)
+
+
+def health(self: MatrixClient) -> Dict[str, Any]:
+    resp = _request_raw(self, "GET", "/health", expected=(200, 204))
+    return {} if resp.status_code == 204 else _try_json(resp)
+
+
+def config(self: MatrixClient) -> Dict[str, Any]:
+    resp = _request_raw(self, "GET", "/config", expected=(200, 404))
+    return {} if resp.status_code == 404 else _try_json(resp)
+
+
+MatrixClient.health = health  # type: ignore[attr-defined]
+MatrixClient.config = config  # type: ignore[attr-defined]
+
+
+# 4) Append-only robustness: ensure MatrixError works even if MatrixAPIError
+#    signature does not accept certain kwargs (e.g., detail).
+#    We already guarded the super().__init__ call. Nothing else needed here.
