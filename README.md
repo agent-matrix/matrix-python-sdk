@@ -5,188 +5,155 @@
 [![CI Status](https://github.com/agent-matrix/matrix-python-sdk/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/agent-matrix/matrix-python-sdk/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blu)](https://github.com/agent-matrix/matrix-python-sdk/blob/master/LICENSE)
 
-The **matrix-python-sdk** is the official Python Software Development Kit (SDK) for the [Matrix Hub](https://github.com/agent-matrix/matrix-hub) API. It provides a high-level, programmatic interface for interacting with the Matrix Hub, designed for developers and enterprises building solutions within the Matrix ecosystem.
+**matrix-python-sdk** is the official Python SDK for the [Matrix Hub](https://github.com/agent-matrix/matrix-hub) — the open catalog and installer for **agents**, **tools**, and **MCP servers**.
 
-### Key Features
-
-* **Catalog Management**: Search and retrieve detailed information about agents, tools, and other catalog entities.
-* **Package Installation**: Programmatically install agents, tools, and MCP servers with dependency resolution.
-* **Remote & Ingestion Control**: Manage catalog remotes and trigger data ingestion processes.
-* **Bulk Operations**: A lightweight micro-framework for registering millions of MCP servers concurrently.
+Built for teams that need **fast discovery**, **reproducible installs**, and **safe runtime** operations at scale.
 
 ---
 
-## Installation
+## What’s new in 0.1.2
 
-To install the library, run the following command:
+* **Search helpers** (`matrix_sdk.search`): on-top of `/catalog/search` with filter normalization, tiny retries, and automatic mode fallbacks (semantic → hybrid → keyword).
+* **Client search parity**: `MatrixClient.search` supports `with_rag` (fit reasons) and `rerank` (`none` | `llm`).
+* Quality & docs updates across installer/runtime/bulk.
+
+---
+
+## Why teams choose this SDK
+
+* **One interface** for a messy ecosystem — consistent search/install across agents, tools, and MCP servers.
+* **Reproducible installs** — Hub-backed plans, adapters, and lockfiles you can ship to CI and prod.
+* **Production guardrails** — safe archive extraction, Git host allow-lists, ETag-aware caching, typed models.
+* **Performance at scale** — lean client, server-side indexing/scoring, normalized params to maximize cache hits.
+
+---
+
+## Install
 
 ```bash
 pip install matrix-python-sdk
-````
+```
 
-### Requirements
+Python **3.11+** supported.
 
-  * **Python**: Version `3.11` or newer.
+---
 
-### Optional Extras
+## Quickstart
 
-You can install additional dependencies for specific functionalities:
-
-  * **CLI**: `pip install "matrix-python-sdk[cli]"` for the `matrix servers` bulk-registration command-line interface.
-  * **Development**: `pip install "matrix-python-sdk[dev]"` for installing development dependencies (testing, linting).
-
------
-
-## Getting Started
-
-The following example demonstrates how to initialize the client and perform a basic catalog search.
+### 1) Search
 
 ```python
 from matrix_sdk.client import MatrixClient
-from matrix_sdk.cache import Cache
-from matrix_sdk.schemas import SearchResponse
 
-# 1. (Optional) Initialize a local cache to improve performance for repeated requests.
-#    The TTL (Time To Live) is set in seconds.
-cache = Cache(cache_dir="~/.cache/matrix", ttl=(4 * 60 * 60)) # 4 hours
+hub = MatrixClient("http://127.0.0.1:7300")
 
-# 2. Initialize the MatrixClient with your Hub URL and authentication token.
-client = MatrixClient(
-    base_url="http://localhost:7300",
-    token="YOUR_MATRIX_TOKEN",
-    cache=cache,
+res = hub.search(
+    q="extract pdf tables",
+    type="any",
+    mode="hybrid",       # "keyword" | "semantic" | "hybrid"
+    limit=5,
+    with_snippets=True,
+    with_rag=False,
+    include_pending=False,
+    rerank="none",
 )
 
-# 3. Perform a catalog search for agents related to "summarize pdfs".
-#    Filters can be applied for capabilities, frameworks, providers, etc.
-resp: SearchResponse = client.search(
-    q="summarize pdfs",
-    type="agent",
-    capabilities="pdf,summarize",
-    frameworks="langgraph,crewai",
-    providers="openai,watsonx",
-    mode="hybrid",
-    limit=10,
-)
-
-# 4. Process and display the search results.
-print(f"Found {resp.total} results matching your query:")
-for item in resp.items:
-    print(f"- ID: {item.id} (Score: {item.score_final:.2f})\n  Summary: {item.summary}\n")
-
+for it in res.get("items", []):
+    print(it.get("id"), "→", it.get("manifest_url"))
 ```
 
------
-
-## API Reference
-
-### `MatrixClient`
-
-The `matrix_sdk.client.MatrixClient` is the primary interface for interacting with the Matrix Hub API.
-
-| Method                      | Description                                                      | Returns          |
-| :-------------------------- | :--------------------------------------------------------------- | :--------------- |
-| **`.search(...)`** | Performs a full-text and filtered search of the catalog.         | `SearchResponse` |
-| **`.get_entity(id)`** | Retrieves the full manifest and metadata for a given entity UID. | `EntityDetail`   |
-| **`.install(id, target, …)`** | Executes an installation plan (e.g., `pip`, `docker`, adapters). | `InstallOutcome` |
-| **`.list_remotes()`** | Lists all configured catalog remotes.                            | `dict`           |
-| **`.add_remote(url, …)`** | Adds a new remote index, including its name and trust policy.    | `dict`           |
-| **`.trigger_ingest(name)`** | Manually initiates the ingestion process for a specified remote. | `dict`           |
-
-### `Cache`
-
-The `matrix_sdk.cache.Cache` is an optional component for caching API responses to reduce latency and API load.
-
-  * **Constructor**: `Cache(cache_dir: Path | str, ttl: int)`
-  * **Methods**:
-      * `.get(key, allow_expired=False)` → `CachedResponse | None`
-      * `.set(key, response, etag=None)` → `None`
-
-### Data Types (`matrix_sdk.schemas`)
-
-The SDK uses Pydantic models for structured, type-hinted data in API requests and responses. Key models include:
-
-  * **Search & Entities**: `SearchItem`, `SearchResponse`, `EntityDetail`
-  * **Installation**: `InstallStepResult`, `InstallOutcome`
-  * **Errors**: `MatrixAPIError`
-
-### Bulk Server Registration
-
-For managing large-scale deployments, the `BulkRegistrar` provides an efficient, asynchronous method to register multiple MCP servers from various sources.
+Prefer the high-level helper for resilience and typed results:
 
 ```python
+from matrix_sdk.search import search, SearchOptions
+res = search(hub, "chat with PDFs", type="agent",
+             options=SearchOptions(as_model=True, max_attempts=3))
+print(res.total, [i.id for i in res.items])
+```
+
+### 2) Install
+
+```python
+from matrix_sdk.client import MatrixClient
+
+hub = MatrixClient("http://127.0.0.1:7300")
+
+hub.install(
+    id="mcp_server:hello-sse-server@0.1.0",
+    target="./.matrix/runners/demo",
+    # alias="hello-sse",         # optional
+    # options={"force": True},   # optional
+)
+```
+
+### 3) Run locally (no daemon)
+
+```python
+from matrix_sdk.client import MatrixClient
+from matrix_sdk.installer import LocalInstaller
+from matrix_sdk import runtime
+
+hub = MatrixClient("http://127.0.0.1:7300")
+result = LocalInstaller(hub).build("mcp_server:hello-sse-server@0.1.0", alias="hello-sse")
+
+lock = runtime.start(result.target, alias="hello-sse")
+print("PID:", lock.pid, "PORT:", lock.port)
+runtime.stop("hello-sse")
+```
+
+### 4) Bulk register (optional)
+
+Register servers (ZIP/dir/Git) into an MCP Gateway with concurrency, idempotency keys, and capability probing.
+
+```python
+import os, asyncio
 from matrix_sdk.bulk.bulk_registrar import BulkRegistrar
-import asyncio
 
-# Define sources for server discovery (e.g., Git repository)
-sources = [
-    {
-        "kind": "git",
-        "url": "https://github.com/IBM/docling-mcp",
-        "ref": "main",
-        "probe": True
-    }
-]
+sources = [{"kind":"git","url":"https://github.com/ruslanmv/hello-mcp","ref":"main","probe":True}]
 
-# Initialize the registrar with the gateway URL and an admin token
 registrar = BulkRegistrar(
-    gateway_url="http://localhost:4444",
-    token="YOUR_ADMIN_TOKEN",
-    concurrency=100
+    gateway_url=os.getenv("GATEWAY_URL", "http://127.0.0.1:4444"),
+    token=os.getenv("ADMIN_TOKEN"),
+    concurrency=50,
+    probe=True,
 )
 
-# Asynchronously register all servers found in the defined sources
 results = asyncio.run(registrar.register_servers(sources))
 print(results)
 ```
 
------
+---
 
-## Development & Testing
+## API surface (snapshot)
 
-To contribute to development or run tests locally, first set up the environment.
+* `matrix_sdk.client.MatrixClient`: `search`, `entity`, `install`, `list_remotes`, `add_remote`, `delete_remote`, `trigger_ingest`
+* `matrix_sdk.search`: `search`, `search_try_modes`, `SearchOptions`
+* `matrix_sdk.installer.LocalInstaller`: `plan`, `materialize`, `prepare_env`, `build`
+* `matrix_sdk.runtime`: `start`, `stop`, `status`, `tail_logs`, `doctor`, `log_path`
+* `matrix_sdk.bulk.*` (optional): discovery, gateway client, registrar
 
-```bash
-# Install development dependencies
-make install
-```
+Pydantic models (v1/v2 compatible) in `matrix_sdk.schemas`: `SearchItem`, `SearchResponse`, `EntityDetail`, `InstallOutcome`, etc.
 
-### Running Tests
+---
 
-Execute the test suite using the `Makefile`:
+## Reliability, Security, Performance
 
-```bash
-make test
-```
+* **Reliability**: strict error types, small safe retries, idempotent bulk writes, optional ETag cache.
+* **Security**: safe ZIP/TAR extraction, Git host allow-lists, deny-by-default where sensible.
+* **Performance**: minimal client overhead, normalized search params, server-side scoring and indexing.
 
-### Code Style & Linting
+---
 
-We use `ruff` and `black` for linting and formatting, which can be run easily via the `Makefile`.
+## Links
 
-```bash
-# Check for code style issues
-make lint
+* Docs: see `docs/` (MkDocs) — Usage, API Reference, Bulk
+* Source: [https://github.com/agent-matrix/matrix-python-sdk](https://github.com/agent-matrix/matrix-python-sdk)
+* Matrix Hub: [https://github.com/agent-matrix/matrix-hub](https://github.com/agent-matrix/matrix-hub)
+* License: [Apache 2.0](https://github.com/agent-matrix/matrix-python-sdk/blob/master/LICENSE)
 
-# Automatically format all code
-make fmt
-```
-
-Continuous Integration (CI) is configured via GitHub Actions. See the workflow file at `.github/workflows/ci.yml`.
-
------
-
-## License
-
-This project is licensed under the **Apache 2.0 License**.
-
-© Agent Matrix — [LICENSE](LICENSE)
-
------
+---
 
 ## Contributing
 
-We welcome contributions from the community. Please read our [**CONTRIBUTING.md**](CONTRIBUTING.md) for guidelines on how to submit issues, feature requests, and pull requests.
-
------
-
-*Matrix Hub and the Matrix Python SDK are open-source projects by the Agent Matrix team.*
+We welcome issues and PRs. Please read **CONTRIBUTING.md** before submitting changes.
+Join us in shaping a fast, safe, and open ecosystem for AI agents, tools, and MCP servers.
