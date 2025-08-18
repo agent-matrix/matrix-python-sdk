@@ -175,7 +175,9 @@ def _build_params(
     return params, m
 
 
-def _fallback_modes(current_mode: str, provided: Tuple[str, ...] | None) -> Tuple[str, ...]:
+def _fallback_modes(
+    current_mode: str, provided: Tuple[str, ...] | None
+) -> Tuple[str, ...]:
     """Compute the fallback chain given current mode and an optional override."""
     if provided:
         return tuple(x for x in provided if x != current_mode)
