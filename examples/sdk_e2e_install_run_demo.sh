@@ -46,7 +46,7 @@ fi
 export PYTHONPATH="${PYTHONPATH:-}:$ROOT"
 
 # --- config (env overrides + args) -------------------------------------------
-export MATRIX_HUB_BASE="${MATRIX_HUB_BASE:-${MATRIX_HUB_URL:-http://127.0.0.1:7300}}"
+export MATRIX_HUB_BASE="${MATRIX_HUB_BASE:-${MATRIX_HUB_URL:-https://api.matrixhub.io}}"
 export MATRIX_HUB_TOKEN="${MATRIX_HUB_TOKEN:-${MATRIX_TOKEN:-}}"
 
 # CLI-style args override env; fall back to sane defaults
@@ -92,7 +92,7 @@ from matrix_sdk.runtime import (
 )
 
 # Robust env reads (namespaced first, then legacy keys, with defaults)
-HUB_BASE  = os.getenv("MATRIX_HUB_BASE", os.getenv("MATRIX_HUB_URL", "http://127.0.0.1:7300"))
+HUB_BASE  = os.getenv("MATRIX_HUB_BASE", os.getenv("MATRIX_HUB_URL", "https://api.matrixhub.io"))
 HUB_TOKEN = os.getenv("MATRIX_HUB_TOKEN") or os.getenv("MATRIX_TOKEN") or None
 ID        = os.getenv("MATRIX_ID", os.getenv("ID", "mcp_server:hello-sse-server@0.1.0"))
 ALIAS     = os.getenv("MATRIX_ALIAS", os.getenv("ALIAS", "hello-world-mcp-sse"))

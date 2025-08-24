@@ -5,7 +5,7 @@ import os
 from typing import Any, Dict, List, Tuple
 from matrix_sdk.client import MatrixClient, MatrixError
 
-BASE = os.getenv("MATRIX_HUB_BASE", "http://127.0.0.1:7300")
+BASE = os.getenv("MATRIX_HUB_BASE", "https://api.matrixhub.io")
 TOKEN = os.getenv("MATRIX_HUB_TOKEN")  # optional
 
 

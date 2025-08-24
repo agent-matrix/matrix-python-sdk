@@ -10,7 +10,7 @@ Usage:
     python -m examples.top5_search
 
 Environment variables (optional):
-    HUB_URL             : Base URL of your Matrix Hub (default: http://127.0.0.1:7300)
+    HUB_URL             : Base URL of your Matrix Hub (default: https://api.matrixhub.io)
     HUB_TOKEN           : Bearer token, if your Hub requires auth
     HUB_QUERY           : Search query (default: "hello")
     HUB_TYPE            : agent|tool|mcp_server|any (default: any)
@@ -204,7 +204,7 @@ def _diagnose_entity(hub: MatrixClient, id_: str, item: Dict[str, Any]) -> None:
 
 
 def main() -> None:
-    base_url = os.getenv("HUB_URL", "http://127.0.0.1:7300")
+    base_url = os.getenv("HUB_URL", "https://api.matrixhub.io")
     token = os.getenv("HUB_TOKEN")
     q = os.getenv("HUB_QUERY", "hello")
     typ = os.getenv("HUB_TYPE", "any")

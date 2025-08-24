@@ -3,7 +3,7 @@ from matrix_sdk.installer import LocalInstaller
 from matrix_sdk import runtime
 
 # 1. Initialize the client and installer
-client = MatrixClient(base_url="http://127.0.0.1:7300")
+client = MatrixClient(base_url="https://api.matrixhub.io")
 installer = LocalInstaller(client)
 
 # 2. Build the project locally

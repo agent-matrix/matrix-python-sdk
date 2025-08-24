@@ -15,7 +15,7 @@ Usage:
   python -m examples.route_probe
 
 Environment variables (override as needed):
-  HUB_URL        : Hub base URL (default: http://127.0.0.1:7300)
+  HUB_URL        : Hub base URL (default: https://api.matrixhub.io)
   HUB_TOKEN      : Bearer token if required
   HUB_TIMEOUT    : Float seconds for client timeout (default: 20)
 
@@ -300,7 +300,7 @@ def probe_remotes_and_ingest(base_client: MatrixClient, *, remote_url: str, remo
 # ---------------------------- main -------------------------------------------
 
 def main() -> int:
-    hub_url = os.getenv("HUB_URL", "http://127.0.0.1:7300")
+    hub_url = os.getenv("HUB_URL", "https://api.matrixhub.io")
     token = os.getenv("HUB_TOKEN")
     timeout = float(os.getenv("HUB_TIMEOUT", "20"))
 

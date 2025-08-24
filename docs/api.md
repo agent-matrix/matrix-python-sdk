@@ -225,7 +225,7 @@ from matrix_sdk.installer import LocalInstaller
 from matrix_sdk import runtime
 
 # 1. Initialize the client and installer
-client = MatrixClient(base_url="http://127.0.0.1:7300")
+client = MatrixClient(base_url="https://api.matrixhub.io")
 installer = LocalInstaller(client)
 
 # 2. Build the project locally
@@ -289,7 +289,7 @@ def search(
 from matrix_sdk.client import MatrixClient
 from matrix_sdk.search import search, SearchOptions
 
-hub = MatrixClient("http://127.0.0.1:7300")
+hub = MatrixClient("https://api.matrixhub.io")
 
 # Hybrid with fallbacks; typed response
 res = search(

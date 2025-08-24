@@ -11,7 +11,7 @@ Usage:
   python -m examples.install_from_manifest
 
 Environment variables (override as needed):
-  HUB_URL       : Matrix Hub base URL (default: http://127.0.0.1:7300)
+  HUB_URL       : Matrix Hub base URL (default: https://api.matrixhub.io)
   HUB_TOKEN     : Bearer token (if Hub requires auth)
   MANIFEST_URL  : URL to a JSON (or YAML) manifest
   TARGET        : Where to install locally (default: ./.matrix/runners/hello-mcp)
@@ -154,7 +154,7 @@ def _try_load_with_fallbacks(url: str, *, timeout: float, debug: bool) -> Dict[s
 # ------------------------------ main ------------------------------ #
 
 def main() -> int:
-    base_url = os.getenv("HUB_URL", "http://127.0.0.1:7300")
+    base_url = os.getenv("HUB_URL", "https://api.matrixhub.io")
     token = os.getenv("HUB_TOKEN")
     manifest_url = os.getenv(
         "MANIFEST_URL",

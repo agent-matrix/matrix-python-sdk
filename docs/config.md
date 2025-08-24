@@ -10,7 +10,7 @@ Create a `.env` or export variables in your shell:
 
 ```env
 # Matrix Hub (catalog + install)
-MATRIX_HUB_URL="http://127.0.0.1:7300"
+MATRIX_HUB_URL="https://api.matrixhub.io"
 MATRIX_TOKEN="YOUR_API_TOKEN"        # optional
 
 # MCP Gateway (bulk registration; optional)
@@ -31,7 +31,7 @@ import os
 from matrix_sdk import MatrixClient
 
 hub = MatrixClient(
-    base_url=os.getenv("MATRIX_HUB_URL", "http://127.0.0.1:7300"),
+    base_url=os.getenv("MATRIX_HUB_URL", "https://api.matrixhub.io"),
     token=os.getenv("MATRIX_TOKEN"),  # optional
     timeout=15.0,                     # seconds (default 15.0)
 )
@@ -138,7 +138,7 @@ session = httpx.Client(
     proxies=None,  # or {"http": "...", "https": "..."}
 )
 
-hub = MatrixClient(base_url="http://127.0.0.1:7300", session=session)
+hub = MatrixClient(base_url="https://api.matrixhub.io", session=session)
 ```
 
 > If you pass `token=...`, the client sets `Authorization: Bearer <token>` automatically.
@@ -166,7 +166,7 @@ from matrix_sdk.cache import Cache
 from matrix_sdk import MatrixClient
 
 cache = Cache(ttl_seconds=60)  # TTL value is advisory; ETag drives freshness
-hub = MatrixClient(base_url="http://127.0.0.1:7300", cache=cache)
+hub = MatrixClient(base_url="https://api.matrixhub.io", cache=cache)
 
 res = hub.search(q="hello", type="any", limit=5)
 ```
@@ -201,7 +201,7 @@ The client raises `MatrixError` on non-2xx responses or network errors:
 ```python
 from matrix_sdk import MatrixClient, MatrixError
 
-hub = MatrixClient("http://127.0.0.1:7300")
+hub = MatrixClient("https://api.matrixhub.io")
 
 try:
     hub.install(id="tool:missing@0.0.0", target="./dest")

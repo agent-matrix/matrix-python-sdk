@@ -471,7 +471,7 @@ def probe_capabilities(manifest: dict, timeout: float = 5.0) -> dict:
 ```python
 from matrix_sdk.client import MatrixClient
 
-hub = MatrixClient("http://127.0.0.1:7300")
+hub = MatrixClient("https://api.matrixhub.io")
 res = hub.search("hello", type="mcp_server", mode="keyword", limit=5, include_pending=True)
 print([it["id"] for it in res.get("items", [])])
 ```
@@ -482,7 +482,7 @@ print([it["id"] for it in res.get("items", [])])
 from matrix_sdk.client import MatrixClient
 from matrix_sdk.search import search, SearchOptions
 
-hub = MatrixClient("http://127.0.0.1:7300")
+hub = MatrixClient("https://api.matrixhub.io")
 res = search(hub, "summarize pdfs", type="any", options=SearchOptions(as_model=False))
 print(res["total"])
 ```
@@ -494,7 +494,7 @@ from matrix_sdk.client import MatrixClient
 from matrix_sdk.installer import LocalInstaller
 from matrix_sdk import runtime
 
-hub = MatrixClient("http://127.0.0.1:7300")
+hub = MatrixClient("https://api.matrixhub.io")
 installer = LocalInstaller(hub)
 
 result = installer.build("mcp_server:hello-sse-server@0.1.0", alias="my-server")

@@ -9,7 +9,7 @@ This guide covers common tasks using `MatrixClient` and (optionally) the bulk re
 ```python
 from matrix_sdk.client import MatrixClient
 
-hub = MatrixClient(base_url="http://127.0.0.1:7300")
+hub = MatrixClient(base_url="https://api.matrixhub.io")
 
 res = hub.search(
     q="summarize pdfs",
@@ -43,7 +43,7 @@ for item in res.get("items", []):
 ```python
 from matrix_sdk.client import MatrixClient
 
-hub = MatrixClient("http://127.0.0.1:7300")
+hub = MatrixClient("https://api.matrixhub.io")
 detail = hub.entity("tool:hello@0.1.0")
 print(detail.get("name"), "-", detail.get("summary"))
 ```
@@ -55,7 +55,7 @@ print(detail.get("name"), "-", detail.get("summary"))
 ```python
 from matrix_sdk.client import MatrixClient
 
-hub = MatrixClient("http://127.0.0.1:7300")
+hub = MatrixClient("https://api.matrixhub.io")
 hub.install(
     id="tool:hello@0.1.0",
     target="./.matrix/runners/demo",
@@ -73,7 +73,7 @@ The Hub returns an install plan + results (artifacts, adapters written, lockfile
 ```python
 from matrix_sdk.client import MatrixClient
 
-hub = MatrixClient("http://127.0.0.1:7300")
+hub = MatrixClient("https://api.matrixhub.io")
 
 print("Remotes:", hub.list_remotes())
 hub.add_remote("https://example.org/catalog/index.json", name="example")
@@ -151,7 +151,7 @@ python -m matrix_sdk.bulk.cli \
 ```python
 from matrix_sdk.client import MatrixClient, MatrixError
 
-hub = MatrixClient("http://127.0.0.1:7300")
+hub = MatrixClient("https://api.matrixhub.io")
 
 try:
     hub.install(id="tool:does-not-exist@0.0.0", target="./dest")
@@ -169,7 +169,7 @@ High-level helpers around `GET /catalog/search` with normalization, tiny retries
 from matrix_sdk.client import MatrixClient
 from matrix_sdk.search import search, SearchOptions, search_try_modes
 
-hub = MatrixClient("http://127.0.0.1:7300")
+hub = MatrixClient("https://api.matrixhub.io")
 
 # 1) Hybrid (default) with safe fallbacks; returns dict by default
 res = search(

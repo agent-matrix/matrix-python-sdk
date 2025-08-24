@@ -9,7 +9,7 @@ Usage:
     python -m examples.install_inline_hello
 
 Env (optional):
-    HUB_URL      : default http://127.0.0.1:7300
+    HUB_URL      : default https://api.matrixhub.io
     HUB_TOKEN    : bearer token if your Hub requires auth
     MANIFEST_URL : override the raw manifest URL to fetch
 """
@@ -23,7 +23,7 @@ from urllib.request import Request, urlopen
 
 from matrix_sdk import MatrixClient, MatrixError
 
-HUB_URL = os.getenv("HUB_URL", "http://127.0.0.1:7300")
+HUB_URL = os.getenv("HUB_URL", "https://api.matrixhub.io")
 HUB_TOKEN = os.getenv("HUB_TOKEN")
 
 # Canonical (correct) GitHub Raw URL (no `refs/heads`)

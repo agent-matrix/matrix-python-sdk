@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-HUB_URL="${HUB_URL:-http://127.0.0.1:7300}"
+HUB_URL="${HUB_URL:-https://api.matrixhub.io}"
 HUB_TOKEN="${HUB_TOKEN:-}"
 QUERY="${QUERY:-hello}"
 TYPE="${TYPE:-any}"                  # any|agent|tool|mcp_server
@@ -36,7 +36,7 @@ from typing import Any, Dict
 from matrix_sdk import MatrixClient, MatrixError
 from matrix_sdk.search import search, search_try_modes, SearchOptions
 
-HUB_URL = os.getenv("HUB_URL", "http://127.0.0.1:7300")
+HUB_URL = os.getenv("HUB_URL", "https://api.matrixhub.io")
 HUB_TOKEN = os.getenv("HUB_TOKEN") or None
 QUERY = os.getenv("QUERY", "hello")
 TYPE = os.getenv("TYPE", "any")

@@ -77,7 +77,7 @@ def hub_base() -> str:
     """
     return _env_first(
         ["MATRIX_HUB_BASE", "MATRIX_HUB_URL", "HUB_URL"],
-        "http://127.0.0.1:7300",
+        "https://api.matrixhub.io",
     )
 
 

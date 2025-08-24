@@ -7,7 +7,7 @@
 #
 # You can override defaults via environment variables before running:
 #
-#   HUB_URL="http://127.0.0.1:7300" \
+#   HUB_URL="https://api.matrixhub.io" \
 #   HUB_TOKEN="..." \
 #   # Either point to an index.json...
 #   INDEX_URL="https://raw.githubusercontent.com/ruslanmv/hello-mcp/refs/heads/main/matrix/index.json" \
@@ -30,7 +30,7 @@
 
 set -euo pipefail
 
-export HUB_URL="${HUB_URL:-http://127.0.0.1:7300}"
+export HUB_URL="${HUB_URL:-https://api.matrixhub.io}"
 export HUB_TOKEN="${HUB_TOKEN:-}"
 export INDEX_URL="${INDEX_URL:-https://raw.githubusercontent.com/ruslanmv/hello-mcp/refs/heads/main/matrix/index.json}"
 export MANIFEST_URL="${MANIFEST_URL:-}"
@@ -45,7 +45,7 @@ import json, os, sys, urllib.request, urllib.error
 from typing import Any, Dict, Optional
 from matrix_sdk import MatrixClient, MatrixError
 
-HUB_URL    = os.getenv("HUB_URL", "http://127.0.0.1:7300")
+HUB_URL    = os.getenv("HUB_URL", "https://api.matrixhub.io")
 HUB_TOKEN  = os.getenv("HUB_TOKEN") or None
 INDEX_URL  = os.getenv("INDEX_URL") or ""
 MANIFEST_URL_ENV = os.getenv("MANIFEST_URL") or ""

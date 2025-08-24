@@ -14,7 +14,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export PYTHONPATH="${PYTHONPATH:-}:${ROOT_DIR}"
 
 # Set the Matrix Hub URL (can be overridden by an environment variable)
-export MATRIX_HUB_BASE="${MATRIX_HUB_BASE:-http://127.0.0.1:7300}"
+export MATRIX_HUB_BASE="${MATRIX_HUB_BASE:-https://api.matrixhub.io}"
 
 # --- Python Driver Script ---
 # The following Python code is executed directly by the shell script.

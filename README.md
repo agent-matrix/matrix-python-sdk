@@ -45,7 +45,7 @@ Python **3.11+** supported.
 ```python
 from matrix_sdk.client import MatrixClient
 
-hub = MatrixClient("http://127.0.0.1:7300")
+hub = MatrixClient("https://api.matrixhub.io")
 
 res = hub.search(
     q="extract pdf tables",
@@ -76,7 +76,7 @@ print(res.total, [i.id for i in res.items])
 ```python
 from matrix_sdk.client import MatrixClient
 
-hub = MatrixClient("http://127.0.0.1:7300")
+hub = MatrixClient("https://api.matrixhub.io")
 
 hub.install(
     id="mcp_server:hello-sse-server@0.1.0",
@@ -93,7 +93,7 @@ from matrix_sdk.client import MatrixClient
 from matrix_sdk.installer import LocalInstaller
 from matrix_sdk import runtime
 
-hub = MatrixClient("http://127.0.0.1:7300")
+hub = MatrixClient("https://api.matrixhub.io")
 result = LocalInstaller(hub).build("mcp_server:hello-sse-server@0.1.0", alias="hello-sse")
 
 lock = runtime.start(result.target, alias="hello-sse")

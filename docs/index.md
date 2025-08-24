@@ -38,7 +38,7 @@ pip install matrix-python-sdk
 ```python
 from matrix_sdk.client import MatrixClient
 
-hub = MatrixClient(base_url="http://127.0.0.1:7300")
+hub = MatrixClient(base_url="https://api.matrixhub.io")
 
 # Top-5 search across all types; include snippets when available
 res = hub.search(
@@ -69,7 +69,7 @@ from matrix_sdk.client import MatrixClient
 from matrix_sdk.installer import LocalInstaller
 from matrix_sdk import runtime
 
-hub = MatrixClient("http://127.0.0.1:7300")
+hub = MatrixClient("https://api.matrixhub.io")
 installer = LocalInstaller(hub)
 
 result = installer.build("mcp_server:hello-sse-server@0.1.0", alias="my-server")
@@ -90,7 +90,7 @@ Prefer the high-level helper when you want resilience and typed results.
 from matrix_sdk.client import MatrixClient
 from matrix_sdk.search import search, SearchOptions, search_try_modes
 
-hub = MatrixClient("http://127.0.0.1:7300")
+hub = MatrixClient("https://api.matrixhub.io")
 
 # Hybrid with safe fallbacks; returns dict by default
 res = search(
