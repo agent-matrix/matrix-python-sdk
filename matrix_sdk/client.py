@@ -34,6 +34,11 @@ from urllib.parse import quote, urlencode
 
 import httpx
 
+# >>> Minimal, production-safe TLS hardening import (no behavior change when not needed)
+from .ssl_compat import configure_ssl_trust  # production-safe TLS hardening
+
+# <<<
+
 try:
     # Optional typed models (recommended)
     from .schemas import (
@@ -137,6 +142,10 @@ class MatrixClient:
     ) -> None:
         if not base_url:
             raise ValueError("base_url is required")
+        # Ensure robust TLS trust behavior across platforms/venvs.
+        # No-ops if user already configured CA env vars or MATRIX_SSL_TRUST=off
+        configure_ssl_trust()
+
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.cache = cache
@@ -379,7 +388,9 @@ class MatrixClient:
     def manifest_url(self, id: str) -> Optional[str]:
         try:
             ent = self.entity(id)
-            url = ent.get("source_url") or ent.get("manifest_url")  # type: ignore[call-arg]
+            url = ent.get("source_url") or ent.get(
+                "manifest_url"
+            )  # type: ignore[call-arg]
             if url:
                 return url
         except Exception:
@@ -481,7 +492,8 @@ def _request_raw(
 
 
 def list_remotes_any(self: MatrixClient) -> Dict[str, Any]:
-    """Try /catalog/remotes then /remotes; return {} if both 404.
+    """
+    Try /catalog/remotes then /remotes; return {} if both 404.
     Does not alter existing list_remotes().
     """
     try:
