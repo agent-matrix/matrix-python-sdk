@@ -122,9 +122,25 @@ class LocalInstaller:
         logger.debug("LocalInstaller created (fs_root=%s)", self.fs_root)
 
     def plan(self, id: str, target: str | os.PathLike[str]) -> Dict[str, Any]:
-        """Requests an installation plan from the Hub."""
+        """
+        Request an installation plan from the Hub.
+
+        SECURITY/PORTABILITY:
+            Never send a client absolute path to the server. Convert the local target
+            (e.g., ~/.matrix/runners/<alias>/<version>) to a safe, relative label
+            "<alias>/<version>". This prevents the Hub from attempting to access
+            client-local paths and avoids permission errors.
+        """
         logger.info("plan: requesting Hub plan for id=%s target=%s", id, target)
-        outcome = self.client.install(id, target=target)
+
+        to_send = (
+            str(target)
+            if (os.getenv("MATRIX_INSTALL_SEND_ABS_TARGET") or "").strip().lower()
+            in {"1", "true", "yes", "on"}
+            else _plan_target_for_server(id, target)
+        )
+
+        outcome = self.client.install(id, target=to_send)
         return _as_dict(outcome)
 
     def materialize(
@@ -202,6 +218,9 @@ class LocalInstaller:
         """Performs the full plan, materialize, and prepare_env workflow."""
         tgt = self._abs(target or default_install_target(id, alias=alias))
         logger.info("build: target resolved → %s", _short(tgt))
+
+        # Fail fast if local install location isn't writable (developer-friendly).
+        _ensure_local_writable(tgt)
 
         outcome = self.plan(id, tgt)
         build_report = self.materialize(outcome, tgt)
@@ -363,7 +382,7 @@ class LocalInstaller:
         return None
 
     # --- Private Environment Helpers ---
-    # In class LocalInstaller, replace this entire method:
+
     def _prepare_python_env(
         self, target_path: Path, runner: Dict[str, Any], timeout: int
     ) -> bool:
@@ -453,7 +472,8 @@ class LocalInstaller:
 
 
 def _python_bin(venv_path: Path) -> str:
-    return str(venv_path / "Scripts/python.exe" if os.name == "nt" else "bin/python")
+    # FIX: ensure non-Windows joins with venv_path (previous code returned "bin/python").
+    return str(venv_path / ("Scripts/python.exe" if os.name == "nt" else "bin/python"))
 
 
 def _run(cmd: list[str], *, cwd: Path, timeout: int) -> None:
@@ -482,3 +502,38 @@ def _as_dict(obj: Any) -> Dict[str, Any]:
     if isinstance(obj, dict):
         return obj
     return {}
+
+
+# ---------------------------- New small, safe helpers ----------------------------
+
+
+def _plan_target_for_server(id_str: str, target: str | os.PathLike[str]) -> str:
+    """
+    Convert a local absolute path (e.g., ~/.matrix/runners/<alias>/<version>)
+    into a server-safe *label* "<alias>/<version>".
+
+    Never leak client absolute paths to the server.
+    """
+    p = Path(str(target))
+    alias = (p.parent.name or "runner").strip()
+    version = (p.name or "0").strip()
+    label = f"{alias}/{version}".replace("\\", "/").lstrip("/")
+    return label or "runner/0"
+
+
+def _ensure_local_writable(path: Path) -> None:
+    """
+    Fail fast with a clear error if the local target directory isn't writable.
+    Creates the directory if needed and verifies writeability with a probe file.
+    """
+    path.mkdir(parents=True, exist_ok=True)
+    probe = path / ".matrix_write_probe"
+    try:
+        probe.write_text("ok", encoding="utf-8")
+    except Exception as e:  # pragma: no cover - depends on FS permissions
+        raise PermissionError(f"Local install target not writable: {path} — {e}") from e
+    finally:
+        try:
+            probe.unlink()
+        except Exception:
+            pass

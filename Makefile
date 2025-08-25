@@ -2,23 +2,26 @@
 # ---------------------------------------------------------------------------
 # Variables
 # ---------------------------------------------------------------------------
-# Use the system's python3 to bootstrap the virtual environment
-SYS_PYTHON	:= python3
-VENV_DIR	:= .venv
+SYS_PYTHON := python3
+VENV_DIR   := .venv
 
-# All subsequent commands will use the python interpreter from the venv
-PYTHON		:= $(VENV_DIR)/bin/python
-PIP		:= $(PYTHON) -m pip
+PYTHON     := $(VENV_DIR)/bin/python
+PIP        := $(PYTHON) -m pip
 
-BUILD_DIR	:= dist
-SRC_DIR		:= matrix_sdk
-TEST_DIR	:= tests
-DOCS_DIR	:= docs
-CACHE_DIR	:= ~/.cache/matrix-sdk
+BUILD_DIR  := dist
+SRC_DIR    := matrix_sdk
+TEST_DIR   := tests
+DOCS_DIR   := docs
+CACHE_DIR  := ~/.cache/matrix-sdk
 
-# A sentinel file to check if the venv is set up and dependencies are installed.
-# If pyproject.toml changes, this file becomes outdated, triggering a re-install.
-VENV_SENTINEL := $(VENV_DIR)/.install_sentinel
+# Sentinels
+VENV_CREATED   := $(VENV_DIR)/.created
+VENV_SENTINEL  := $(VENV_DIR)/.install_sentinel
+
+# Incremental install knobs
+# -U upgrades only when needed; strategy keeps upgrades minimal
+INSTALL_OPTS ?= -U --upgrade-strategy only-if-needed
+BASIC_TOOLS  ?= pip setuptools wheel
 
 # Conditionally include directories that exist for linting/formatting
 PY_TARGETS := $(SRC_DIR)
@@ -35,7 +38,7 @@ help:
 	@echo "Usage: make <target>"
 	@echo ""
 	@echo "Primary targets:"
-	@echo "  install      Setup virtual environment and install all dependencies"
+	@echo "  install      Create venv if needed, then incrementally update deps (fast)"
 	@echo "  lint         Run ruff to check for issues"
 	@echo "  fmt          Auto-format code with black and ruff"
 	@echo "  typecheck    Run mypy"
@@ -55,20 +58,28 @@ help:
 # ---------------------------------------------------------------------------
 # Environment setup
 # ---------------------------------------------------------------------------
-# This is the core target for setting up the environment. It's triggered
-# automatically by any other target that depends on it.
-$(VENV_SENTINEL): pyproject.toml
-	@echo "Setting up virtual environment in $(VENV_DIR)..."
+
+# 1) Ensure venv exists and core tools are up to date (one-time + occasional)
+$(VENV_CREATED):
+	@echo "Creating virtual environment in $(VENV_DIR) if missing…"
 	test -f $(PYTHON) || $(SYS_PYTHON) -m venv $(VENV_DIR)
-	@echo "Installing dependencies..."
-	$(PIP) install --upgrade pip
-	$(PIP) install -e ".[dev]"
+	@echo "Upgrading basic tools ($(BASIC_TOOLS))…"
+	$(PIP) install -U $(BASIC_TOOLS)
 	@touch $@
 
-# The user-facing 'install' target is now just an alias for ensuring the
-# environment is ready.
-install: $(VENV_SENTINEL)
-	@echo "Virtual environment is up to date."
+# 2) Heavy dependency sync ONLY when pyproject.toml changes (kept for safety)
+$(VENV_SENTINEL): pyproject.toml | $(VENV_CREATED)
+	@echo "Detected pyproject.toml change → syncing dev dependencies (one-time)…"
+	$(PIP) install $(INSTALL_OPTS) -e ".[dev]"
+	@touch $@
+
+# 3) User-facing: fast, incremental install/update for tight dev loops
+install: $(VENV_CREATED)
+	@echo "Incremental install: updating project & deps if needed (fast)…"
+	$(PIP) install $(INSTALL_OPTS) -e ".[dev]"
+	@# Touch the sentinel so lint/test targets won’t re-trigger a heavy sync right after.
+	@touch $(VENV_SENTINEL)
+	@echo "Environment is up to date."
 
 # ---------------------------------------------------------------------------
 # Linting & Formatting

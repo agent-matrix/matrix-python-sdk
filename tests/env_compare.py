@@ -504,5 +504,6 @@ def main() -> None:
     print("\n== Diagnosis ==")
     print(diagnose(a, b, name_a, name_b))
 
+
 if __name__ == "__main__":
     main()
