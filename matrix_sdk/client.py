@@ -17,9 +17,9 @@ Additions (backwards-compatible):
 - fetch_manifest(...)          → fetch and parse manifest (JSON or YAML)
 - MatrixError                  → subclass of MatrixAPIError; raised by this client
 - search(...) enhancements     → accept positional `q`; treat type="any" as no filter;
-                                normalize booleans for include_pending/with_snippets
+                                 normalize booleans for include_pending/with_snippets
 - Cache compatibility          → supports both legacy cache (get/set) and simple cache
-                                (make_key/get_etag/get_body/save) for ETag
+                                 (make_key/get_etag/get_body/save) for ETag
 
 Return types:
 - If `matrix_sdk.schemas` is available, responses will be parsed into Pydantic
@@ -324,6 +324,62 @@ class MatrixClient:
             body["manifest"] = manifest
             if source_url:
                 body["source_url"] = source_url
+
+        resp = self._request("POST", "/catalog/install", json_body=body)
+        return self._parse(InstallOutcome, self._safe_json(resp))
+
+    def install_manifest(
+        self,
+        fqid: str,
+        *,
+        manifest: Dict[str, Any],
+        target: str | os.PathLike[str],
+        provenance: Optional[Dict[str, Any]] = None,
+        alias: Optional[str] = None,
+        options: Optional[Dict[str, Any]] = None,
+    ) -> Union["InstallOutcome", Dict[str, Any]]:
+        """
+        Inline-manifest install.
+
+        POST /catalog/install with body:
+          {
+            "id": <fqid>,
+            "target": <label-or-path>,
+            "manifest": { ... },
+            "provenance": { "source_url": "..." }?,
+            "alias": "...",
+            "options": { ... }
+          }
+
+        Notes:
+          - Keeps install() unchanged for back-compat.
+          - `provenance` may be a dict; if a string is accidentally passed,
+            we coerce it to {"source_url": <string>} for robustness.
+        """
+        if not fqid:
+            raise ValueError("fqid is required")
+        if manifest is None:
+            raise ValueError("manifest is required")
+        if target is None:
+            raise ValueError("target is required")
+
+        body: Dict[str, Any] = {
+            "id": fqid,
+            "target": os.fspath(target),
+            "manifest": manifest,
+        }
+
+        if alias is not None:
+            body["alias"] = alias
+        if options:
+            body["options"] = options
+
+        # Accept either dict or a bare string for convenience; coerce string → {"source_url": ...}
+        if provenance:
+            if isinstance(provenance, str):
+                body["provenance"] = {"source_url": provenance}
+            else:
+                body["provenance"] = provenance
 
         resp = self._request("POST", "/catalog/install", json_body=body)
         return self._parse(InstallOutcome, self._safe_json(resp))

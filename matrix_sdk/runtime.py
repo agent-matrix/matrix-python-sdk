@@ -28,7 +28,7 @@ LOGS_DIR = HOME / "logs"
 
 @dataclass(frozen=True)
 class LockInfo:
-    """Represents the contents of a .lock file for a running process."""
+    """Represents the contents of a .lock file for a running process or connector."""
 
     pid: int
     port: Optional[int]
@@ -36,6 +36,7 @@ class LockInfo:
     target: str
     started_at: float
     runner_path: str
+    url: Optional[str] = None  # NEW: remote URL for connector-type runners
 
 
 def _maybe_configure_logging() -> None:
@@ -72,6 +73,9 @@ def _load_lock_info(alias: str) -> Optional[LockInfo]:
         return None
     try:
         data = json.loads(lock_path.read_text(encoding="utf-8"))
+        # Backward-compatible: tolerate older locks without 'url'
+        if "url" not in data:
+            data["url"] = None
         return LockInfo(**data)
     except (json.JSONDecodeError, TypeError) as e:
         logger.error("runtime: could not parse lock file for alias '%s': %s", alias, e)
@@ -151,7 +155,7 @@ def log_path(alias: str) -> str:
 def start(
     target: str, *, alias: Optional[str] = None, port: Optional[int] = None
 ) -> LockInfo:
-    """Starts a server process, finding an available port if necessary."""
+    """Starts a server process, or attaches to a remote connector if configured."""
     target_path = Path(target).expanduser().resolve()
     alias = alias or target_path.name
     lock_path = _get_lock_path(alias)
@@ -164,6 +168,26 @@ def start(
         raise FileNotFoundError(f"runner.json not found in {target_path}")
 
     runner = json.loads(runner_path.read_text(encoding="utf-8"))
+    rtype = (runner.get("type") or "").lower()
+
+    # Connector mode: do NOT spawn a process; simply persist the URL
+    if rtype == "connector" and runner.get("url"):
+        url = str(runner.get("url")).strip()
+        lock_info = LockInfo(
+            alias=alias,
+            pid=0,
+            port=None,
+            started_at=time.time(),
+            target=str(target_path),
+            runner_path=str(runner_path),
+            url=url,
+        )
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.write_text(json.dumps(asdict(lock_info), indent=2), encoding="utf-8")
+        logger.info("runtime: attached connector '%s' to %s (no local process)", alias, url)
+        return lock_info
+
+    # Local process mode (python/node etc.)
     command = _build_command(target_path, runner)
     effective_port = _find_available_port(port or default_port())
 
@@ -187,6 +211,7 @@ def start(
         started_at=time.time(),
         target=str(target_path),
         runner_path=str(runner_path),
+        url=None,
     )
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     lock_path.write_text(json.dumps(asdict(lock_info), indent=2), encoding="utf-8")
@@ -201,18 +226,25 @@ def start(
 
 
 def stop(alias: str) -> bool:
-    """Stops a running process by its alias."""
+    """Stops a running process by its alias or detaches a connector."""
     lock_info = _load_lock_info(alias)
     if not lock_info:
         logger.info("runtime: stop for '%s' ignored; no lock file found.", alias)
         return False
 
     try:
-        logger.info(
-            "runtime: stopping process with pid %d for alias '%s'", lock_info.pid, alias
-        )
-        os.kill(lock_info.pid, signal.SIGTERM)
-        return True
+        if lock_info.pid and lock_info.pid > 0:
+            logger.info(
+                "runtime: stopping process with pid %d for alias '%s'",
+                lock_info.pid,
+                alias,
+            )
+            os.kill(lock_info.pid, signal.SIGTERM)
+            return True
+        else:
+            # Connector (no local process)
+            logger.info("runtime: '%s' is a connector (no local process to stop)", alias)
+            return True
     except ProcessLookupError:
         logger.warning(
             "runtime: process with pid %d for alias '%s' already gone.",
@@ -234,7 +266,8 @@ def status() -> List[LockInfo]:
         alias = lock_file.parent.name
         if lock_info := _load_lock_info(alias):
             try:
-                os.kill(lock_info.pid, 0)  # Check if process exists
+                if lock_info.pid and lock_info.pid > 0:
+                    os.kill(lock_info.pid, 0)  # Check if process exists
                 running_processes.append(lock_info)
             except ProcessLookupError:
                 logger.warning(
@@ -265,11 +298,42 @@ def tail_logs(alias: str, *, follow: bool = False, n: int = 20) -> Iterator[str]
 
 
 def doctor(alias: str, timeout: int = 5) -> Dict[str, Any]:
-    """Performs a health check on a running server."""
+    """Performs a health check on a running server or connector."""
     lock_info = _load_lock_info(alias)
     if not lock_info:
         return {"status": "fail", "reason": "Server not running (no lock file)."}
 
+    # Connector: we don't control the process; report configured URL
+    if lock_info.pid <= 0 and lock_info.url:
+        url = lock_info.url
+        # Connector: quick probe that won't hang on SSE
+        try:
+            with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+                # Try a HEAD first (fast, common)
+                resp = client.head(url, headers={"Accept": "text/event-stream"})
+                code = resp.status_code
+        except httpx.RequestError:
+            # Some SSE servers don't support HEAD; use a streamed GET
+            try:
+                with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+                    with client.stream(
+                        "GET", url, headers={"Accept": "text/event-stream"}
+                    ) as resp:
+                        code = resp.status_code
+            except httpx.RequestError as e:
+                return {
+                    "status": "warn",
+                    "reason": f"connector configured for {url} but HTTP probe failed: {e}",
+                }
+
+        if 200 <= code < 500:
+            return {
+                "status": "ok",
+                "reason": f"connector configured for {url} (HTTP {code})",
+            }
+        return {"status": "ok", "reason": f"connector configured for {url}"}
+
+    # Local process
     try:
         os.kill(lock_info.pid, 0)  # Check if process is alive
         if not lock_info.port:

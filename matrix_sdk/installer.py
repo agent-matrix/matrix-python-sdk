@@ -10,6 +10,7 @@ import venv
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse, urlunparse
 
 from .client import MatrixClient
 from .manifest import ManifestResolutionError
@@ -69,17 +70,50 @@ def _short(path: Path | str, maxlen: int = 120) -> str:
     return s if len(s) <= maxlen else ("…" + s[-(maxlen - 1) :])
 
 
+def _connector_enabled() -> bool:
+    """Feature flag for auto-creating a connector runner when none exists.
+
+    Defaults **ON** (non-destructive; only triggers when we cannot find/infer a
+    regular runner). Disable with MATRIX_SDK_ENABLE_CONNECTOR=0.
+    """
+    val = (os.getenv("MATRIX_SDK_ENABLE_CONNECTOR") or "1").strip().lower()
+    return val in {"1", "true", "yes", "on"}
+
+
 def _is_valid_runner_schema(runner: Dict[str, Any], logger: logging.Logger) -> bool:
-    """Basic schema validation for a runner.json-like object."""
+    """Basic schema validation for a runner.json-like object.
+
+    Historically we required {"type","entry"}. To remain backward compatible *and*
+    allow connector-style runners, we accept the following:
+      • process runners (python/node/...):  require 'type' AND 'entry'
+      • connector runners:                  type == 'connector' AND a 'url'
+    """
     if not isinstance(runner, dict):
         logger.debug("runner validation: failed (not a dict)")
         return False
-    if not runner.get("type") or not runner.get("entry"):
+
+    rtype = (runner.get("type") or "").strip().lower()
+    if not rtype:
+        logger.warning("runner validation: failed (missing 'type')")
+        return False
+
+    if rtype == "connector":
+        ok = bool((runner.get("url") or "").strip())
+        if not ok:
+            logger.warning(
+                "runner validation: 'connector' missing required 'url' field"
+            )
+        else:
+            logger.debug("runner validation: connector schema is valid")
+        return ok
+
+    # Process-style runner: require entry
+    if not runner.get("entry"):
         logger.warning(
-            "runner validation: failed (missing required 'type' or 'entry' keys in %r)",
-            list(runner.keys()),
+            "runner validation: failed (missing required 'entry' for type=%r)", rtype
         )
         return False
+
     logger.debug("runner validation: schema appears valid")
     return True
 
@@ -350,7 +384,12 @@ class LocalInstaller:
     def _materialize_runner(
         self, outcome: Dict[str, Any], target_path: Path
     ) -> Optional[str]:
-        """Finds or infers a runner.json file for the project."""
+        """Finds or infers a runner.json file for the project.
+
+        If none is found and the feature flag is enabled, attempt to synthesize a
+        connector runner when the outcome (or echoed manifest) clearly points to an
+        MCP SSE server URL.
+        """
         plan_node = outcome.get("plan") or {}
         # Attempt 1: From a direct object in the plan
         if (runner_obj := plan_node.get("runner")) and isinstance(runner_obj, dict):
@@ -378,6 +417,25 @@ class LocalInstaller:
                 inferred_path = target_path / "runner.json"
                 inferred_path.write_text(json.dumps(inferred, indent=2), "utf-8")
                 return str(inferred_path)
+        # Attempt 4 (new): synthesize connector if manifest indicates MCP/SSE
+        if _connector_enabled():
+            url = _extract_mcp_sse_url(outcome) or _extract_mcp_sse_url(plan_node)
+            if url:
+                connector = {
+                    "type": "connector",
+                    "integration_type": "MCP",
+                    "request_type": "SSE",
+                    "url": url,
+                    "endpoint": "/sse",
+                    "headers": {},
+                }
+                if _is_valid_runner_schema(connector, logger):
+                    synth_path = target_path / "runner.json"
+                    synth_path.write_text(json.dumps(connector, indent=2), "utf-8")
+                    logger.info(
+                        "runner: synthesized MCP/SSE connector runner → %s", synth_path
+                    )
+                    return str(synth_path)
         logger.warning("runner: a valid runner config was not found or inferred")
         return None
 
@@ -392,7 +450,15 @@ class LocalInstaller:
         venv_path = target_path / venv_dir
         if not venv_path.exists():
             logger.info("env: creating venv → %s", _short(venv_path))
-            venv.create(venv_path, with_pip=True, clear=False, symlinks=True)
+            try:
+                venv.create(venv_path, with_pip=True, clear=False, symlinks=True)
+            except Exception as e:
+                # Windows robustness: retry without symlinks
+                logger.warning(
+                    "env: venv.create failed with symlinks=True (%s); retrying with symlinks=False",
+                    e,
+                )
+                venv.create(venv_path, with_pip=True, clear=False, symlinks=False)
 
         if python_builder:
             logger.info("env: using modern python_builder to install dependencies...")
@@ -537,3 +603,58 @@ def _ensure_local_writable(path: Path) -> None:
             probe.unlink()
         except Exception:
             pass
+
+
+# ---------------------------- Connector extraction helpers ----------------------------
+
+
+def _ensure_sse_url(url: str) -> str:
+    """Normalize a server url to end with '/sse'."""
+    try:
+        url = (url or "").strip()
+        if not url:
+            return ""
+        parsed = urlparse(url)
+        path = (parsed.path or "").rstrip("/")
+        if not path.endswith("/sse"):
+            path = f"{path}/sse" if path else "/sse"
+        return urlunparse((parsed.scheme, parsed.netloc, path + "/", "", "", ""))
+    except Exception:
+        return url
+
+
+def _url_from_manifest(m: Dict[str, Any]) -> str:
+    # Common shapes for MCP manifest
+    try:
+        reg = m.get("mcp_registration") or {}
+        srv = reg.get("server") or m.get("server") or {}
+        url = srv.get("url") or m.get("server_url") or ""
+        return _ensure_sse_url(str(url)) if url else ""
+    except Exception:
+        return ""
+
+
+def _extract_mcp_sse_url(node: Any) -> str | None:
+    """Walk an arbitrary outcome/plan object and try to extract an MCP/SSE url."""
+    def _dig(obj: Any) -> str:
+        if isinstance(obj, dict):
+            # direct manifest keys first
+            for key in ("manifest", "source_manifest", "echo_manifest", "input_manifest"):
+                if key in obj and isinstance(obj[key], dict):
+                    url = _url_from_manifest(obj[key])
+                    if url:
+                        return url
+            # then generic walk
+            for v in obj.values():
+                url = _dig(v)
+                if url:
+                    return url
+        elif isinstance(obj, list):
+            for it in obj:
+                url = _dig(it)
+                if url:
+                    return url
+        return ""
+
+    url = _dig(node)
+    return url or None
