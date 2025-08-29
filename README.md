@@ -11,11 +11,34 @@ Built for teams that need **fast discovery**, **reproducible installs**, and **s
 
 ---
 
-## What’s new in 0.1.2
+## What’s new in 0.1.6
 
-* **Search helpers** (`matrix_sdk.search`): on-top of `/catalog/search` with filter normalization, tiny retries, and automatic mode fallbacks (semantic → hybrid → keyword).
-* **Client search parity**: `MatrixClient.search` supports `with_rag` (fit reasons) and `rerank` (`none` | `llm`).
-* Quality & docs updates across installer/runtime/bulk.
+* **Connector runner (attach mode) — opt-in when no local process**
+  If an install plan produces **no runner** but the manifest clearly specifies an **MCP/SSE URL**, the SDK now synthesizes a lightweight **connector** runner:
+
+  ```json
+  {
+    "type": "connector",
+    "integration_type": "MCP",
+    "request_type": "SSE",
+    "url": "http://127.0.0.1:6288/sse",
+    "endpoint": "/sse",
+    "headers": {}
+  }
+  ```
+
+  Gate with `MATRIX_SDK_ENABLE_CONNECTOR=1` (defaults **on**). Existing Python/Node runners are unchanged.
+
+* **Runtime support for connectors**
+  `matrix_sdk.runtime.start()` detects `runner.type=="connector"` and **does not spawn a process**. It writes a lock with `pid=0`, `port=None`, and the **URL**; `stop()` becomes a safe no-op (removes lock), and `doctor()` returns **ok** with a helpful message (optionally probing the URL).
+
+* **Windows venv robustness**
+  When creating virtual environments, if `venv.create(..., symlinks=True)` fails on Windows, the SDK **retries with `symlinks=False`**. This is non-breaking and improves reliability on managed machines.
+
+* **Safer planning defaults**
+  The CLI/SDK continue to avoid sending **absolute local paths** to the Hub by converting targets to a safe `<alias>/<version>` label.
+
+* **(Keeps 0.1.2 improvements)** Search helpers (`matrix_sdk.search`), parity parameters in `MatrixClient.search` (e.g. `with_rag`, `rerank`), and documentation quality updates.
 
 ---
 
@@ -101,6 +124,21 @@ print("PID:", lock.pid, "PORT:", lock.port)
 runtime.stop("hello-sse")
 ```
 
+#### Connector / attach mode (new in 0.1.6)
+
+If `runner.json` has `{"type":"connector","url":"http://127.0.0.1:6288/sse"}`, `runtime.start(...)` **does not** start a process. Instead it stores the URL in the lock (with `pid=0`). Use the URL directly with your MCP client.
+
+```jsonc
+// ~/.matrix/runners/<alias>/<version>/runner.json
+{
+  "type": "connector",
+  "integration_type": "MCP",
+  "request_type": "SSE",
+  "url": "http://127.0.0.1:6288/sse",
+  "endpoint": "/sse"
+}
+```
+
 ### 4) Bulk register (optional)
 
 Register servers (ZIP/dir/Git) into an MCP Gateway with concurrency, idempotency keys, and capability probing.
@@ -130,6 +168,7 @@ print(results)
 * `matrix_sdk.search`: `search`, `search_try_modes`, `SearchOptions`
 * `matrix_sdk.installer.LocalInstaller`: `plan`, `materialize`, `prepare_env`, `build`
 * `matrix_sdk.runtime`: `start`, `stop`, `status`, `tail_logs`, `doctor`, `log_path`
+  *(Lock files now include an optional `url` for connector runners; `stop()` is a no-op for connectors.)*
 * `matrix_sdk.bulk.*` (optional): discovery, gateway client, registrar
 
 Pydantic models (v1/v2 compatible) in `matrix_sdk.schemas`: `SearchItem`, `SearchResponse`, `EntityDetail`, `InstallOutcome`, etc.
