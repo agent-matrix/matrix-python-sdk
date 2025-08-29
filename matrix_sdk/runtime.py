@@ -184,7 +184,9 @@ def start(
         )
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         lock_path.write_text(json.dumps(asdict(lock_info), indent=2), encoding="utf-8")
-        logger.info("runtime: attached connector '%s' to %s (no local process)", alias, url)
+        logger.info(
+            "runtime: attached connector '%s' to %s (no local process)", alias, url
+        )
         return lock_info
 
     # Local process mode (python/node etc.)
@@ -243,7 +245,9 @@ def stop(alias: str) -> bool:
             return True
         else:
             # Connector (no local process)
-            logger.info("runtime: '%s' is a connector (no local process to stop)", alias)
+            logger.info(
+                "runtime: '%s' is a connector (no local process to stop)", alias
+            )
             return True
     except ProcessLookupError:
         logger.warning(
