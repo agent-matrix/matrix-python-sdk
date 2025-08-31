@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import subprocess
+import inspect
 import urllib.request
 import venv
 from dataclasses import dataclass
@@ -402,13 +403,15 @@ class LocalInstaller:
         plan_node = outcome.get("plan") or {}
 
         strategies = [
-            _try_fetch_runner_from_b64,         # 1) embedded b64 (new)
-            _try_fetch_runner_from_url,         # 2) explicit URL
-            _try_find_runner_from_object,       # 3) object in plan
-            _try_find_runner_from_file,         # 4) file at known path
-            _try_find_runner_via_shallow_search,# 5) shallow search
-            _try_infer_runner_from_structure,   # 6) infer from files
-            _try_synthesize_connector_runner,   # 7) synthesize connector
+            _try_fetch_runner_from_b64,          # 1) embedded b64
+            _try_fetch_runner_from_url,          # 2) explicit URL
+            _try_find_runner_from_object,        # 3) object in plan
+            _try_find_runner_in_embedded_manifest,    # 4) NEW: v2 embedded runner or v1 synth
+            _try_find_runner_from_file,          # 4) file at known path
+            _try_find_runner_via_shallow_search, # 5) shallow search
+            _try_fetch_runner_from_manifest_url, # 6) synthesize via manifest URL/provenance.source_url
+            _try_infer_runner_from_structure,    # 7) infer from files
+            _try_synthesize_connector_runner,    # 8) fallback synthesize
         ]
 
         for strategy in strategies:
@@ -438,45 +441,70 @@ class LocalInstaller:
                 )
                 venv.create(venv_path, with_pip=True, clear=False, symlinks=False)
 
+        # Optional pip index overrides (used only in fallback path below)
         index_url = (os.getenv("MATRIX_SDK_PIP_INDEX_URL") or "").strip()
         extra_index = (os.getenv("MATRIX_SDK_PIP_EXTRA_INDEX_URL") or "").strip()
         pybin = _python_bin(venv_path)
 
         if python_builder:
             logger.info("env: using modern python_builder to install dependencies…")
-            if not python_builder.run_python_build(
-                target_path=target_path,
-                runner_data=runner,
-                logger=logger,
-                timeout=timeout,
-                index_url=index_url or None,
-                extra_index_url=extra_index or None,
-            ):
+            ok = False
+            try:
+                # Probe signature to avoid passing kwargs unsupported by older releases.
+                sig = inspect.signature(python_builder.run_python_build)  # type: ignore[attr-defined]
+                kwargs = dict(
+                    target_path=target_path,
+                    runner_data=runner,
+                    logger=logger,
+                    timeout=timeout,
+                )
+                if "index_url" in sig.parameters and index_url:
+                    kwargs["index_url"] = index_url
+                if "extra_index_url" in sig.parameters and extra_index:
+                    kwargs["extra_index_url"] = extra_index
+
+                ok = bool(python_builder.run_python_build(**kwargs))  # type: ignore[misc]
+            except TypeError:
+                # Legacy signature without timeout/index args
+                ok = bool(
+                    python_builder.run_python_build(  # type: ignore[misc]
+                        target_path=target_path,
+                        runner_data=runner,
+                        logger=logger,
+                    )
+                )
+            except Exception as e:
+                logger.warning("env: python_builder failed (%s); continuing with legacy pip flow if needed", e)
+                ok = False
+
+            if not ok:
                 logger.warning("env: python_builder did not find a known dependency file to install.")
-        else:  # Fallback for legacy installs
+        else:
             logger.warning("env: python_builder not found, falling back to requirements.txt/pyproject")
-            # Always keep pip/setuptools current
-            base_cmd = [pybin, "-m", "pip", "install", "-U", "pip", "setuptools", "wheel"]
-            _run(base_cmd, cwd=target_path, timeout=timeout)
 
-            pip_cmd = [pybin, "-m", "pip", "install"]
-            if index_url:
-                pip_cmd += ["--index-url", index_url]
-            if extra_index:
-                pip_cmd += ["--extra-index-url", extra_index]
+        # Legacy pip/pyproject fallback (kept intact)
+        # Always keep pip/setuptools current
+        base_cmd = [pybin, "-m", "pip", "install", "-U", "pip", "setuptools", "wheel"]
+        _run(base_cmd, cwd=target_path, timeout=timeout)
 
-            req_path = target_path / "requirements.txt"
-            pyproject = target_path / "pyproject.toml"
-            setup_cfg = target_path / "setup.cfg"
-            setup_py = target_path / "setup.py"
+        pip_cmd = [pybin, "-m", "pip", "install"]
+        if index_url:
+            pip_cmd += ["--index-url", index_url]
+        if extra_index:
+            pip_cmd += ["--extra-index-url", extra_index]
 
-            if req_path.exists():
-                _run(pip_cmd + ["-r", str(req_path)], cwd=target_path, timeout=timeout)
-            elif pyproject.exists() or setup_py.exists() or setup_cfg.exists():
-                # Best-effort editable install if a build config is present
-                _run(pip_cmd + ["-e", "."], cwd=target_path, timeout=timeout)
-            else:
-                logger.info("env: no requirements/pyproject/setup found; skipping python deps")
+        req_path = target_path / "requirements.txt"
+        pyproject = target_path / "pyproject.toml"
+        setup_cfg = target_path / "setup.cfg"
+        setup_py = target_path / "setup.py"
+
+        if req_path.exists():
+            _run(pip_cmd + ["-r", str(req_path)], cwd=target_path, timeout=timeout)
+        elif pyproject.exists() or setup_py.exists() or setup_cfg.exists():
+            # Best-effort editable install if a build config is present
+            _run(pip_cmd + ["-e", "."], cwd=target_path, timeout=timeout)
+        else:
+            logger.info("env: no requirements/pyproject/setup found; skipping python deps")
 
         return True
 
@@ -676,6 +704,114 @@ def _try_find_runner_from_object(installer: LocalInstaller, plan_node: Dict, tar
             return str(runner_path)
     return None
 
+def _try_find_runner_in_embedded_manifest(
+    installer: "LocalInstaller",
+    plan_node: Dict[str, Any],
+    target_path: Path,
+    outcome: Dict[str, Any],
+) -> Optional[str]:
+    """
+    Strategy: If the plan/outcome carries a manifest object:
+
+    • v2 path: manifest['runner'] exists → validate & write runner.json
+    • v1 path: no runner, but MCP server URL present → synthesize connector runner
+
+    Works on common keys: 'manifest', 'source_manifest', 'echo_manifest', 'input_manifest'.
+    """
+    # Look for any embedded manifest-like dicts
+    candidate_keys = ("manifest", "source_manifest", "echo_manifest", "input_manifest")
+    nodes: List[Dict[str, Any]] = []
+
+    for container in (plan_node, outcome):
+        if not isinstance(container, dict):
+            continue
+        for k in candidate_keys:
+            v = container.get(k)
+            if isinstance(v, dict):
+                nodes.append(v)
+
+    if not nodes:
+        return None
+
+    # 1) v2: manifest has embedded 'runner'
+    for m in nodes:
+        try:
+            r = m.get("runner")
+            if isinstance(r, dict) and _is_valid_runner_schema(r, logger):
+                rp = target_path / "runner.json"
+                rp.write_text(json.dumps(r, indent=2), encoding="utf-8")
+                logger.info("runner: materialized from embedded manifest.runner → %s", _short(rp))
+                return str(rp)
+        except Exception:
+            # Fall through to v1 synthesis
+            pass
+
+    # 2) v1: no runner; try to synthesize connector runner from manifest server URL
+    for m in nodes:
+        try:
+            url = _url_from_manifest(m)  # already normalizes to /sse
+            if url:
+                connector = {
+                    "type": "connector",
+                    "integration_type": "MCP",
+                    "request_type": "SSE",
+                    "url": url,
+                    "endpoint": "/sse",
+                    "headers": {},
+                }
+                if _is_valid_runner_schema(connector, logger):
+                    rp = target_path / "runner.json"
+                    rp.write_text(json.dumps(connector, indent=2), encoding="utf-8")
+                    logger.info("runner: synthesized from embedded manifest server URL → %s", _short(rp))
+                    return str(rp)
+        except Exception:
+            pass
+
+    return None
+
+
+def _try_fetch_runner_from_manifest_url(
+    installer: "LocalInstaller",
+    plan_node: Dict[str, Any],
+    target_path: Path,
+    outcome: Dict[str, Any],
+) -> Optional[str]:
+    """
+    Strategy: If no runner is provided but we have a provenance/source URL to a manifest,
+    fetch it (opt-in) and synthesize a connector runner from its MCP server URL.
+    """
+    allow = (os.getenv("MATRIX_SDK_ALLOW_MANIFEST_FETCH") or "1").strip().lower() in {"1", "true", "yes", "on"}
+    if not allow:
+        return None
+
+    src = (plan_node.get("manifest_url") or (plan_node.get("provenance") or {}).get("source_url")
+        or (outcome.get("provenance") or {}).get("source_url") or "")
+    src = (src or "").strip()
+    if not src:
+        return None
+
+    try:
+        with urllib.request.urlopen(src, timeout=HTTP_TIMEOUT) as resp:
+            data = resp.read().decode("utf-8")
+        manifest = json.loads(data)
+        url = _url_from_manifest(manifest)
+        if url:
+            rp = target_path / "runner.json"
+            connector = {
+                "type": "connector",
+                "integration_type": "MCP",
+                "request_type": "SSE",
+                "url": url,
+                "endpoint": "/sse",
+                "headers": {},
+            }
+            rp.write_text(json.dumps(connector, indent=2), encoding="utf-8")
+            logger.info("runner: synthesized from fetched manifest_url → %s", _short(rp))
+            return str(rp)
+    except Exception as e:
+        logger.debug("runner: manifest_url fetch/synthesis failed: %s", e)
+    return None
+
 
 def _try_find_runner_from_file(installer: LocalInstaller, plan_node: Dict, target_path: Path, *args) -> Optional[str]:
     """Strategy 3: Find runner from a file on disk."""
@@ -710,19 +846,84 @@ def _try_find_runner_via_shallow_search(installer: LocalInstaller, plan_node: Di
     return None
 
 
+# --- NEW: synthesize runner via manifest URL (opt-in, safe) ---
+
+def _make_connector_runner(url: str) -> Dict[str, Any]:
+    return {
+        "type": "connector",
+        "integration_type": "MCP",
+        "request_type": "SSE",
+        "url": _ensure_sse_url(url),
+        "endpoint": "/sse",
+        "headers": {},
+    }
+
+
+def _host_allowed(url: str) -> bool:
+    """Optional domain allowlist for manifest fetches.
+
+    MATRIX_SDK_MANIFEST_DOMAINS: comma-separated hostnames. If unset/empty → allow all.
+    """
+    raw = (os.getenv("MATRIX_SDK_MANIFEST_DOMAINS") or "").strip()
+    if not raw:
+        return True
+    host = urlparse(url).hostname or ""
+    allowed = {h.strip().lower() for h in raw.split(",") if h.strip()}
+    return host.lower() in allowed if allowed else True
+
+
+def _try_fetch_runner_from_manifest_url(installer: LocalInstaller, plan_node: Dict, target_path: Path, outcome: Dict) -> Optional[str]:
+    """Strategy 6: fetch a manifest and synthesize a connector runner if possible.
+
+    Controlled by env MATRIX_SDK_ALLOW_MANIFEST_FETCH (default: on). Optional domain
+    allowlist via MATRIX_SDK_MANIFEST_DOMAINS.
+    """
+    if not _env_bool("MATRIX_SDK_ALLOW_MANIFEST_FETCH", True):
+        return None
+
+    # Try various locations for a manifest URL, and resolve relative URLs if needed
+    src = (
+        plan_node.get("manifest_url")
+        or (plan_node.get("provenance") or {}).get("source_url")
+        or (outcome.get("provenance") or {}).get("source_url")
+        or ""
+    ).strip()
+    if not src:
+        return None
+
+    resolved = _resolve_url_with_base(src, outcome, plan_node)
+    if not _host_allowed(resolved):
+        logger.debug("runner: manifest host not allowed: %s", resolved)
+        return None
+
+    try:
+        with urllib.request.urlopen(resolved, timeout=HTTP_TIMEOUT) as resp:
+            data = resp.read().decode("utf-8")
+        manifest = json.loads(data)
+        url = _url_from_manifest(manifest)
+        if url:
+            rp = target_path / "runner.json"
+            rp.write_text(json.dumps(_make_connector_runner(url), indent=2), encoding="utf-8")
+            logger.info("runner: synthesized from manifest_url → %s", _short(rp))
+            return str(rp)
+    except Exception as e:
+        logger.debug("runner: manifest_url fetch/synthesis failed: %s", e)
+    return None
+
+
 def _try_infer_runner_from_structure(installer: LocalInstaller, plan_node: Dict, target_path: Path, *args) -> Optional[str]:
     """Strategy 5: Infer runner from project file structure."""
     if inferred := installer._infer_runner(target_path):
         if _is_valid_runner_schema(inferred, logger):
             inferred_path = target_path / "runner.json"
-            inferred_path.write_text(json.dumps(inferred, indent=2), "utf-8")
+            inferred_path.write_text(json.dumps(inferred, indent=2), encoding="utf-8")
             logger.info("runner: inferred from structure → %s", _short(inferred_path))
             return str(inferred_path)
     return None
 
 
 def _try_synthesize_connector_runner(installer: LocalInstaller, plan_node: Dict, target_path: Path, outcome: Dict) -> Optional[str]:
-    """Strategy 6: Synthesize a connector runner from manifest data."""
+    """Strategy 8: Synthesize a connector runner from manifest data."""
     if _connector_enabled():
         url = _extract_mcp_sse_url(outcome) or _extract_mcp_sse_url(plan_node)
         if url:
@@ -736,7 +937,7 @@ def _try_synthesize_connector_runner(installer: LocalInstaller, plan_node: Dict,
             }
             if _is_valid_runner_schema(connector, logger):
                 synth_path = target_path / "runner.json"
-                synth_path.write_text(json.dumps(connector, indent=2), "utf-8")
+                synth_path.write_text(json.dumps(connector, indent=2), encoding="utf-8")
                 logger.info("runner: synthesized MCP/SSE connector runner → %s", synth_path)
                 return str(synth_path)
     return None
