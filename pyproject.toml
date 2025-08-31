@@ -89,3 +89,10 @@ module = [
   "matrix_sdk.bulk.probe",
 ]
 ignore_missing_imports = true
+
+[tool.flake8]
+max-complexity = 15
+
+[tool.ruff.lint.mccabe]
+# Increase the maximum complexity from the default of 10
+max-complexity = 15

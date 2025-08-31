@@ -7,11 +7,12 @@ from pathlib import Path
 
 import pytest
 
-from matrix_sdk.installer import LocalInstaller, BuildReport
+from matrix_sdk.installer import BuildReport, LocalInstaller
 
 
 class _DummyClient:
     """Only used to satisfy LocalInstaller(client) signature."""
+
     def __init__(self): ...
     def install(self, *a, **k):  # not used in these tests
         return {}
@@ -31,9 +32,15 @@ def test_materialize_fetches_runner_from_plan_url(tmp_path, monkeypatch, install
 
     def _ok_urlopen(url, timeout=15):
         class _Resp:
-            def __enter__(self): return self
-            def __exit__(self, *exc): return False
-            def read(self): return json.dumps(runner_obj).encode("utf-8")
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self):
+                return json.dumps(runner_obj).encode("utf-8")
+
         return _Resp()
 
     monkeypatch.setattr("urllib.request.urlopen", _ok_urlopen)
