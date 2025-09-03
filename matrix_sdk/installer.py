@@ -832,7 +832,7 @@ def _try_find_runner_in_embedded_manifest(
     return None
 
 
-def _try_fetch_runner_from_manifest_url(
+def _try_fetch_runner_from_manifest_url_old(
     installer: "LocalInstaller",
     plan_node: Dict[str, Any],
     target_path: Path,
@@ -884,6 +884,104 @@ def _try_fetch_runner_from_manifest_url(
     except Exception as e:
         logger.debug("runner: manifest_url fetch/synthesis failed: %s", e)
     return None
+
+def _try_fetch_runner_from_manifest_url(
+    installer: LocalInstaller, plan_node: Dict, target_path: Path, outcome: Dict
+) -> Optional[str]:
+    """Strategy 6: fetch a manifest and synthesize a connector runner if possible.
+
+    Controlled by env MATRIX_SDK_ALLOW_MANIFEST_FETCH (default: on). Optional domain
+    allowlist via MATRIX_SDK_MANIFEST_DOMAINS.
+
+    Enhancement: If the plan lacks provenance/source_url, perform a narrow catalog
+    search for the exact fqid (tool:name@version) to discover entity.source_url.
+    """
+    if not _env_bool("MATRIX_SDK_ALLOW_MANIFEST_FETCH", True):
+        return None
+
+    # 1) Prefer plan/outcome-provided manifest URL (unchanged)
+    src = (
+        (plan_node.get("manifest_url") or "").strip()
+        or ((plan_node.get("provenance") or {}).get("source_url") or "").strip()
+        or ((outcome.get("provenance") or {}).get("source_url") or "").strip()
+    )
+
+    # 2) If missing, try Hub search to resolve the *tool* source_url (new)
+    if not src:
+        try:
+            # Extract fully-qualified id if present (e.g., tool:watsonx-chat@0.1.0)
+            fid = (
+                (outcome.get("id") or "")
+                or (plan_node.get("id") or "")
+                or ((outcome.get("plan") or {}).get("id") or "")
+            ).strip()
+
+            ns = name = ver = None
+            if ":" in fid and "@" in fid:
+                ns, rest = fid.split(":", 1)
+                name, ver = rest.rsplit("@", 1)
+                ns = (ns or "").lower()
+
+            # Only search if we have name+version; prefer type 'tool'
+            if name and ver:
+                search_type = ns or "tool"
+
+                def _items_from(payload: Any) -> list[dict]:
+                    if isinstance(payload, dict):
+                        seq = payload.get("items") or payload.get("results")
+                        return seq if isinstance(seq, list) else []
+                    return payload if isinstance(payload, list) else []
+
+                # Ask the catalog once (include_pending to support dev catalogs)
+                payload = installer.client.search(  # type: ignore[attr-defined]
+                    q=name, type=search_type, limit=25, include_pending=True
+                )
+                for it in _items_from(payload):
+                    iid = (it.get("id") or "").strip()
+                    t = (it.get("type") or it.get("entity_type") or "").strip().lower()
+                    n = (it.get("name") or "").strip()
+                    v = (it.get("version") or "").strip()
+
+                    exact_match = (iid == fid)
+                    tool_match = (t == "tool" and n == name and v == ver)
+
+                    if exact_match or tool_match:
+                        cand = (
+                            (it.get("source_url") or "").strip()
+                            or ((it.get("provenance") or {}).get("source_url") or "").strip()
+                        )
+                        if cand:
+                            src = cand
+                            break
+        except Exception:
+            src = ""
+
+    if not src:
+        return None
+
+    resolved = _resolve_url_with_base(src, outcome, plan_node)
+    if not _host_allowed(resolved):
+        logger.debug("runner: manifest host not allowed: %s", resolved)
+        return None
+
+    # 3) Download manifest + synthesize connector runner from server URL
+    try:
+        with urllib.request.urlopen(resolved, timeout=HTTP_TIMEOUT) as resp:
+            data = resp.read().decode("utf-8")
+        manifest = json.loads(data)
+        url = _url_from_manifest(manifest)  # normalizes to /sse
+        if url:
+            rp = target_path / "runner.json"
+            rp.write_text(
+                json.dumps(_make_connector_runner(url), indent=2), encoding="utf-8"
+            )
+            logger.info("runner: synthesized from manifest_url → %s", _short(rp))
+            return str(rp)
+    except Exception as e:
+        logger.debug("runner: manifest_url fetch/synthesis failed: %s", e)
+
+    return None
+
 
 
 def _try_find_runner_from_file(
