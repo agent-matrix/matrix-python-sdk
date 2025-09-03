@@ -7,16 +7,25 @@ import json
 import logging
 import os
 import subprocess
+import sys
 import urllib.request
 import venv
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urljoin, urlparse, urlunparse
 
 from .client import MatrixClient
 from .manifest import ManifestResolutionError
 from .policy import default_install_target
+
+try:
+    import tomllib as _tomllib  # Python 3.11+
+except ImportError:  # pragma: no cover
+    try:
+        import tomli as _tomllib  # Optional fallback for Python < 3.11
+    except ImportError:
+        _tomllib = None  # type: ignore
 
 # Modular fetchers
 try:
@@ -106,6 +115,7 @@ def _is_valid_runner_schema(runner: Dict[str, Any], logger: logging.Logger) -> b
     * Process runners (python/node) require 'type' + 'entry'.
     * Connector runners require type='connector' + 'url'.
     """
+    logger.debug(f"runner validation: checking schema for runner object: {runner}")
     if not isinstance(runner, dict):
         logger.debug("runner validation: failed (not a dict)")
         return False
@@ -125,13 +135,17 @@ def _is_valid_runner_schema(runner: Dict[str, Any], logger: logging.Logger) -> b
             logger.debug("runner validation: connector schema is valid")
         return ok
 
-    if not (runner.get("entry") or "").strip():
-        logger.warning(
-            "runner validation: failed (missing required 'entry' for type=%r)", rtype
-        )
-        return False
+    # FIX: For any runnable process type, the 'entry' field is essential for the
+    # runtime. We now enforce its presence strictly. The old permissive check for
+    # 'python' was the source of the bug.
+    if rtype in ("python", "node"):
+        if not (runner.get("entry") or "").strip():
+            logger.warning(
+                "runner validation: failed (missing required 'entry' for type=%r)", rtype
+            )
+            return False
 
-    logger.debug("runner validation: schema appears valid")
+    logger.debug("runner validation: schema appears valid for type=%r", rtype)
     return True
 
 
@@ -189,20 +203,23 @@ class LocalInstaller:
         logger.info("plan: requesting Hub plan for id=%s target=%s", id, target)
 
         # Use a server-safe label instead of an absolute path unless overridden.
-        to_send = (
-            str(target)
-            if (os.getenv("MATRIX_INSTALL_SEND_ABS_TARGET") or "").strip().lower()
-            in {"1", "true", "yes", "on"}
-            else _plan_target_for_server(id, target)
-        )
+        send_abs = (os.getenv("MATRIX_INSTALL_SEND_ABS_TARGET") or "").strip().lower()
+        if send_abs in {"1", "true", "yes", "on"}:
+            to_send = str(target)
+            logger.debug("plan: sending absolute target path to server: %s", to_send)
+        else:
+            to_send = _plan_target_for_server(id, target)
+            logger.debug("plan: sending server-safe target label to server: %s", to_send)
 
         outcome = self.client.install(id, target=to_send)
+        logger.debug("plan: received outcome from Hub: %s", outcome)
         return _as_dict(outcome)
 
     def materialize(
         self, outcome: Dict[str, Any], target: str | os.PathLike[str]
     ) -> BuildReport:
         """Write files and fetch artifacts based on the installation plan."""
+        logger.debug("materialize: starting materialization process.")
         target_path = self._abs(target)
         target_path.mkdir(parents=True, exist_ok=True)
         logger.info("materialize: target directory ready → %s", _short(target_path))
@@ -223,6 +240,7 @@ class LocalInstaller:
             report.artifacts_fetched,
             report.runner_path or "-",
         )
+        logger.debug(f"materialize: finished. BuildReport: {report}")
         return report
 
     def prepare_env(
@@ -240,12 +258,16 @@ class LocalInstaller:
             runner_type or "-",
             _short(target_path),
         )
+        logger.debug(f"env: using runner config: {runner}")
 
         py_ok, node_ok, notes = False, False, []
         if runner_type == "python":
+            logger.debug("env: python runner detected, preparing python environment.")
             py_ok = self._prepare_python_env(target_path, runner, timeout)
 
+        # Also check for 'node' key for mixed-language projects
         if runner_type == "node" or runner.get("node"):
+            logger.debug("env: node runner or config detected, preparing node environment.")
             node_ok, node_notes = self._prepare_node_env(target_path, runner, timeout)
             if node_notes:
                 notes.append(node_notes)
@@ -261,6 +283,7 @@ class LocalInstaller:
             report.node_prepared,
             report.notes or "-",
         )
+        logger.debug(f"env: finished. EnvReport: {report}")
         return report
 
     def build(
@@ -272,16 +295,23 @@ class LocalInstaller:
         timeout: int = 900,
     ) -> BuildResult:
         """Perform the full plan, materialize, and prepare_env workflow."""
+        logger.info(f"build: starting full build for id='{id}', alias='{alias}'")
         tgt = self._abs(target or default_install_target(id, alias=alias))
         logger.info("build: target resolved → %s", _short(tgt))
 
         # Fail fast if the local install location isn't writable.
+        logger.debug("build: ensuring target is writable.")
         _ensure_local_writable(tgt)
+        logger.debug("build: target is writable.")
 
+        logger.info("build: STEP 1: Planning...")
         outcome = self.plan(id, tgt)
+        logger.info("build: STEP 2: Materializing...")
         build_report = self.materialize(outcome, tgt)
 
+        logger.info("build: STEP 3: Loading runner config...")
         runner = self._load_runner_from_report(build_report, tgt)
+        logger.info("build: STEP 4: Preparing environment...")
         env_report = self.prepare_env(tgt, runner, timeout=timeout)
 
         result = BuildResult(
@@ -301,12 +331,14 @@ class LocalInstaller:
             env_report.python_prepared,
             env_report.node_prepared,
         )
+        logger.debug(f"build: finished. Final BuildResult: {result}")
         return result
 
     # --- Private Materialization Helpers ---
 
     def _find_file_candidates(self, outcome: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Extract all file descriptions from the various parts of the outcome."""
+        logger.debug("materialize(files): searching for file candidates in outcome.")
         candidates: List[Dict[str, Any]] = []
         sources = [
             (outcome.get("plan") or {}).get("files", []),
@@ -317,42 +349,54 @@ class LocalInstaller:
             ),
             outcome.get("files", []),
         ]
-        for source in sources:
+        for i, source in enumerate(sources):
             if isinstance(source, list):
+                logger.debug(f"materialize(files): found {len(source)} candidates in source #{i+1}.")
                 candidates.extend(item for item in source if isinstance(item, dict))
+        logger.debug(f"materialize(files): total candidates found: {len(candidates)}")
         return candidates
 
     def _materialize_files(self, outcome: Dict[str, Any], target_path: Path) -> int:
         """Find and write all declared files from the installation plan."""
-        logger.info("materialize: writing declared files → %s", _short(target_path))
+        logger.info("materialize(files): writing declared files → %s", _short(target_path))
         candidates = self._find_file_candidates(outcome)
-        logger.debug("materialize: %d file candidate(s) found", len(candidates))
         files_written = 0
         for f in candidates:
             path = f.get("path") or f.get("rel") or f.get("dest")
             if not path:
+                logger.debug("materialize(files): skipping candidate with no path: %s", f)
                 continue
 
             # Normalize path separators (cross-platform safety)
             norm = str(path).replace("\\", "/").strip("/")
             p = (target_path / norm).resolve()
+            logger.debug("materialize(files): preparing to write to %s", _short(p))
             p.parent.mkdir(parents=True, exist_ok=True)
+
             if (content_b64 := f.get("content_b64")) is not None:
+                logger.debug("materialize(files): writing base64 content.")
                 p.write_bytes(base64.b64decode(content_b64))
             elif (content := f.get("content")) is not None:
+                logger.debug("materialize(files): writing text content.")
                 p.write_text(content, encoding="utf-8")
             else:
+                logger.debug("materialize(files): content not provided, touching file to create it.")
                 p.touch()
             files_written += 1
+        logger.info(f"materialize(files): successfully wrote {files_written} files.")
         return files_written
 
     def _handle_git_artifact(self, artifact: Dict[str, Any], target_path: Path) -> None:
         """Handle fetching a git-based artifact, including the legacy shim."""
+        logger.debug(f"artifact(git): handling git artifact: {artifact}")
         spec = artifact.get("spec") or {}
         # WORKAROUND SHIM for legacy 'command' field
         if not spec.get("repo") and (
             cmd := (artifact.get("command") or "").strip()
         ).startswith("git clone"):
+            logger.warning(
+                "artifact(git): SHIM: Found legacy 'command' field. Attempting to derive spec."
+            )
             try:
                 parts = cmd.split()
                 repo_idx = parts.index("clone") + 1
@@ -360,8 +404,8 @@ class LocalInstaller:
                 if "--branch" in parts:
                     ref_idx = parts.index("--branch") + 1
                     spec["ref"] = parts[ref_idx]
-                logger.warning(
-                    "artifact(git): SHIM: Derived spec from legacy 'command' field"
+                logger.info(
+                    "artifact(git): SHIM: Derived spec from legacy 'command' field: %s", spec
                 )
             except (ValueError, IndexError) as e:
                 logger.error(
@@ -369,30 +413,45 @@ class LocalInstaller:
                 )
 
         if fetch_git_artifact:
+            logger.info(f"artifact(git): fetching with spec {spec} into {target_path}")
             fetch_git_artifact(spec=spec, target=target_path)
+        else:
+            logger.error("artifact(git): fetcher not available but git artifact was specified.")
 
     def _handle_http_artifact(
         self, artifact: Dict[str, Any], target_path: Path
     ) -> None:
         """Handle fetching a URL-based artifact."""
+        logger.debug(f"artifact(http): handling http artifact: {artifact}")
         if fetch_http_artifact:
+            url=artifact["url"]
+            dest=artifact.get("path") or artifact.get("dest")
+            sha256=str(s) if (s := artifact.get("sha256")) else None
+            unpack=bool(artifact.get("unpack", False))
+            logger.info(
+                f"artifact(http): fetching url='{url}', dest='{dest}', unpack={unpack}"
+            )
             fetch_http_artifact(
-                url=artifact["url"],
+                url=url,
                 target=target_path,
-                dest=artifact.get("path") or artifact.get("dest"),
-                sha256=str(s) if (s := artifact.get("sha256")) else None,
-                unpack=bool(artifact.get("unpack", False)),
+                dest=dest,
+                sha256=sha256,
+                unpack=unpack,
                 logger=logger,
             )
+        else:
+            logger.error("artifact(http): fetcher not available but http artifact was specified.")
 
     def _materialize_artifacts(self, plan: Dict[str, Any], target_path: Path) -> int:
         """Dispatch artifact fetching to specialized handlers."""
         artifacts = plan.get("artifacts", [])
         if not isinstance(artifacts, list) or not artifacts:
+            logger.debug("materialize(artifacts): no artifacts to fetch.")
             return 0
-        logger.info("materialize: fetching %d artifact(s)", len(artifacts))
+        logger.info("materialize(artifacts): fetching %d artifact(s)", len(artifacts))
         fetched_count = 0
-        for a in artifacts:
+        for i, a in enumerate(artifacts):
+            logger.debug(f"materialize(artifacts): processing artifact #{i+1}: {a}")
             try:
                 if isinstance(a, dict):
                     if a.get("kind") == "git":
@@ -401,9 +460,12 @@ class LocalInstaller:
                     elif a.get("url"):
                         self._handle_http_artifact(a, target_path)
                         fetched_count += 1
+                    else:
+                        logger.warning(f"materialize(artifacts): skipping unknown artifact kind: {a}")
             except (GitFetchError, ArchiveFetchError) as e:
                 logger.error("artifact: failed to fetch: %s", e)
                 raise ManifestResolutionError(str(e)) from e
+        logger.info(f"materialize(artifacts): successfully fetched {fetched_count} artifacts.")
         return fetched_count
 
     def _materialize_runner(
@@ -414,24 +476,29 @@ class LocalInstaller:
         Delegates to specialized helpers for each discovery strategy.
         Priority order is intentional to avoid surprising the user.
         """
+        logger.info("runner: attempting to find or synthesize a runner configuration.")
         plan_node = outcome.get("plan") or {}
 
         strategies = [
-            _try_fetch_runner_from_b64,  # 1) embedded b64
-            _try_fetch_runner_from_url,  # 2) explicit URL
-            _try_find_runner_from_object,  # 3) object in plan
-            _try_find_runner_in_embedded_manifest,  # 4) NEW: v2 embedded runner or v1 synth
-            _try_find_runner_from_file,  # 4) file at known path
-            _try_find_runner_via_shallow_search,  # 5) shallow search
-            _try_fetch_runner_from_manifest_url,  # 6) synthesize via manifest URL
-            _try_infer_runner_from_structure,  # 7) infer from files
-            _try_synthesize_connector_runner,  # 8) fallback synthesize
+            _try_fetch_runner_from_b64,           # 1) embedded b64
+            _try_fetch_runner_from_url,           # 2) explicit URL
+            _try_find_runner_from_object,         # 3) object in plan
+            _try_find_runner_in_embedded_manifest, # 4) NEW: v2 embedded runner or v1 synth
+            _try_find_runner_from_file,           # 5) file at known path
+            _try_find_runner_via_shallow_search, # 6) shallow search
+            _try_fetch_runner_from_manifest_url, # 7) synthesize via manifest URL
+            _try_infer_runner_from_structure,     # 8) infer from files
+            _try_synthesize_connector_runner,     # 9) fallback synthesize
         ]
 
         for strategy in strategies:
+            strategy_name = strategy.__name__
+            logger.debug(f"runner: trying strategy '{strategy_name}'...")
             runner_path = strategy(self, plan_node, target_path, outcome)
             if runner_path:
+                logger.info(f"runner: success! Found runner using strategy '{strategy_name}'. Path: {_short(runner_path)}")
                 return runner_path
+            logger.debug(f"runner: strategy '{strategy_name}' did not find a runner.")
 
         logger.warning("runner: a valid runner config was not found or inferred")
         return None
@@ -440,109 +507,161 @@ class LocalInstaller:
 
     def _prepare_python_env(
         self, target_path: Path, runner: Dict[str, Any], timeout: int
-    ) -> bool:  # noqa: C901
-        """Create a venv and install Python dependencies (cross-platform)."""
+    ) -> bool:
+        """
+        Creates a robust, fully isolated Python virtual environment (venv),
+        upgrades core packaging tools, and installs dependencies.
+        """
+        logger.info("env(python): starting python environment preparation.")
         rp = runner.get("python") or {}
         venv_dir = rp.get("venv") or ".venv"
         venv_path = target_path / venv_dir
-        if not venv_path.exists():
-            logger.info("env: creating venv → %s", _short(venv_path))
-            try:
-                venv.create(venv_path, with_pip=True, clear=False, symlinks=True)
-            except Exception as e:
-                # Windows/FS robustness: retry without symlinks
-                logger.warning(
-                    "env: venv.create failed with symlinks=True (%s); retrying with symlinks=False",
-                    e,
-                )
-                venv.create(venv_path, with_pip=True, clear=False, symlinks=False)
 
-        # Optional pip index overrides (used only in fallback path below)
+        # 1. --- CREATE A FRESH, ISOLATED VIRTUAL ENVIRONMENT ---
+        logger.info(f"env(python): creating fresh, isolated venv in '{_short(venv_path)}'")
+        try:
+            venv.create(
+                venv_path,
+                with_pip=True,
+                clear=True,
+                symlinks=True,
+                system_site_packages=False,  # Explicitly guarantee isolation
+            )
+        except Exception as e:
+            logger.warning(
+                f"env(python): venv creation with symlinks failed ({e}). Retrying without them."
+            )
+            venv.create(
+                venv_path,
+                with_pip=True,
+                clear=True,
+                symlinks=False,
+                system_site_packages=False,  # Also apply isolation here
+            )
+
+        pybin = _python_bin(venv_path)
+        logger.debug(f"env(python): venv created. Python executable is at '{pybin}'")
+
+        # 2. --- UPGRADE CORE PACKAGING TOOLS ---
+        logger.info("env(python): upgrading pip, setuptools, and wheel...")
+        _run(
+            [pybin, "-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel"],
+            cwd=target_path,
+            timeout=timeout,
+        )
+
+        # 3. --- PREPARE BASE INSTALL COMMAND ---
+        pip_cmd = [pybin, "-m", "pip", "install"]
         index_url = (os.getenv("MATRIX_SDK_PIP_INDEX_URL") or "").strip()
         extra_index = (os.getenv("MATRIX_SDK_PIP_EXTRA_INDEX_URL") or "").strip()
-        pybin = _python_bin(venv_path)
+        if index_url:
+            pip_cmd.extend(["--index-url", index_url])
+            logger.debug(f"env(python): using custom index-url: {index_url}")
+        if extra_index:
+            pip_cmd.extend(["--extra-index-url", extra_index])
+            logger.debug(f"env(python): using custom extra-index-url: {extra_index}")
 
+        # 4. --- ATTEMPT INSTALLATION WITH MODERN `python_builder` (if available) ---
         if python_builder:
-            logger.info("env: using modern python_builder to install dependencies…")
+            logger.info("env(python): trying modern python_builder to install dependencies...")
             ok = False
             try:
-                # Probe signature to avoid passing kwargs unsupported by older releases.
-                sig = inspect.signature(python_builder.run_python_build)  # type: ignore[attr-defined]
-                kwargs = dict(
-                    target_path=target_path,
-                    runner_data=runner,
-                    logger=logger,
-                    timeout=timeout,
-                )
-                if "index_url" in sig.parameters and index_url:
-                    kwargs["index_url"] = index_url
-                if "extra_index_url" in sig.parameters and extra_index:
-                    kwargs["extra_index_url"] = extra_index
-
-                ok = bool(python_builder.run_python_build(**kwargs))  # type: ignore[misc]
+                # Modern signature check to pass new args if supported
+                sig = inspect.signature(python_builder.run_python_build)
+                kwargs = dict(target_path=target_path, runner_data=runner, logger=logger, timeout=timeout)
+                if "index_url" in sig.parameters and index_url: kwargs["index_url"] = index_url
+                if "extra_index_url" in sig.parameters and extra_index: kwargs["extra_index_url"] = extra_index
+                ok = bool(python_builder.run_python_build(**kwargs))
             except TypeError:
-                # Legacy signature without timeout/index args
-                ok = bool(
-                    python_builder.run_python_build(  # type: ignore[misc]
-                        target_path=target_path,
-                        runner_data=runner,
-                        logger=logger,
-                    )
-                )
+                logger.debug("env(python): python_builder has legacy signature, calling without timeout/index args.")
+                ok = bool(python_builder.run_python_build(target_path=target_path, runner_data=runner, logger=logger))
             except Exception as e:
-                logger.warning(
-                    "env: python_builder failed (%s); continuing with legacy pip flow if needed",
-                    e,
-                )
+                logger.warning(f"env(python): python_builder failed ({e}); continuing with legacy pip flow")
                 ok = False
 
-            if not ok:
-                logger.warning(
-                    "env: python_builder did not find a known dependency file to install."
-                )
-        else:
-            logger.warning(
-                "env: python_builder not found, falling back to requirements.txt/pyproject"
-            )
+            if ok:
+                logger.info("env(python): python_builder successfully installed dependencies.")
+                return True
+            else:
+                logger.warning("env(python): python_builder did not find a known dependency file. Falling back.")
 
-        # Legacy pip/pyproject fallback (kept intact)
-        # Always keep pip/setuptools current
-        base_cmd = [pybin, "-m", "pip", "install", "-U", "pip", "setuptools", "wheel"]
-        _run(base_cmd, cwd=target_path, timeout=timeout)
-
-        pip_cmd = [pybin, "-m", "pip", "install"]
-        if index_url:
-            pip_cmd += ["--index-url", index_url]
-        if extra_index:
-            pip_cmd += ["--extra-index-url", extra_index]
-
+        # 5. --- FIND AND INSTALL FROM STANDARD DEPENDENCY FILES (LEGACY FALLBACK) ---
+        logger.debug("env(python): using legacy dependency file search.")
+        runner_reqs = (runner.get("python") or {}).get("requirements")
         req_path = target_path / "requirements.txt"
         pyproject = target_path / "pyproject.toml"
-        setup_cfg = target_path / "setup.cfg"
         setup_py = target_path / "setup.py"
 
-        if req_path.exists():
-            _run(pip_cmd + ["-r", str(req_path)], cwd=target_path, timeout=timeout)
-        elif pyproject.exists() or setup_py.exists() or setup_cfg.exists():
-            # Best-effort editable install if a build config is present
-            _run(pip_cmd + ["-e", "."], cwd=target_path, timeout=timeout)
-        else:
-            logger.info(
-                "env: no requirements/pyproject/setup found; skipping python deps"
-            )
+        # Priority 1: `runner.json` specification
+        if isinstance(runner_reqs, list) and runner_reqs:
+            logger.debug(f"env(python): found requirements in runner.json: {runner_reqs}")
+            # Special case for '-r file.txt'
+            if len(runner_reqs) == 2 and runner_reqs[0] in ("-r", "--requirement"):
+                req_file = target_path / runner_reqs[1]
+                if not req_file.is_file():
+                    logger.warning(f"env(python): runner specified '{req_file}', but it was not found. Proceeding to failover.")
+                else:
+                    logger.info(f"env(python): installing from runner-specified file: {req_file}")
+                    _run(pip_cmd + runner_reqs, cwd=target_path, timeout=timeout)
+                    return True
+            else:
+                logger.info("env(python): installing dependencies from runner.json specification...")
+                _run(pip_cmd + runner_reqs, cwd=target_path, timeout=timeout)
+                return True
 
+        # Priority 2: `requirements.txt`
+        if req_path.is_file():
+            logger.info("env(python): found requirements.txt, installing dependencies...")
+            _run(pip_cmd + ["-r", str(req_path)], cwd=target_path, timeout=timeout)
+            return True
+
+        # Priority 3: `pyproject.toml` or `setup.py`
+        if pyproject.is_file() or setup_py.is_file():
+            logger.info("env(python): found pyproject.toml/setup.py, installing project...")
+            is_poetry_non_package = False
+            if pyproject.is_file():
+                _, is_poetry_non_package = _pyproject_backend_info(pyproject)
+
+            if is_poetry_non_package:
+                logger.info("env(python): poetry non-package mode detected. Running 'poetry install'.")
+                try:
+                    _run([pybin, "-m", "pip", "install", "poetry"], cwd=target_path, timeout=timeout)
+                    _run([pybin, "-m", "poetry", "install"], cwd=target_path, timeout=timeout)
+                except subprocess.CalledProcessError as e:
+                    logger.error(f"env(python): 'poetry install' failed. Error: {e}")
+                    raise
+            else:
+                try:
+                    install_args = ["-e", "."] if _env_bool("MATRIX_SDK_PIP_EDITABLE", True) else ["."]
+                    logger.debug(f"env(python): attempting project install with args: {install_args}")
+                    _run(pip_cmd + install_args, cwd=target_path, timeout=timeout)
+                except subprocess.CalledProcessError as e:
+                    if "-e" in install_args:
+                        logger.warning(f"env(python): editable install failed ({e}); retrying non-editable")
+                        _run(pip_cmd + ["."], cwd=target_path, timeout=timeout)
+                    else:
+                        raise
+            return True
+
+        logger.info("env(python): no standard dependency file found. Skipping python deps install.")
         return True
 
     def _prepare_node_env(
         self, target_path: Path, runner: Dict[str, Any], timeout: int
     ) -> tuple[bool, Optional[str]]:
         """Install Node.js dependencies."""
+        logger.info("env(node): starting node environment preparation.")
         np = runner.get("node") or {}
         pm = np.get("package_manager") or _detect_package_manager(target_path)
         if not pm:
+            logger.warning("env(node): node config present but no package manager detected.")
             return False, "node requested but no package manager detected"
+
+        logger.info(f"env(node): using package manager '{pm}'")
         cmd = [pm, "install"] + list(np.get("install_args", []))
+        logger.debug(f"env(node): running install command: {' '.join(cmd)}")
         _run(cmd, cwd=target_path, timeout=timeout)
+        logger.info("env(node): node dependencies installed successfully.")
         return True, None
 
     # --- Private Utility Helpers ---
@@ -551,38 +670,108 @@ class LocalInstaller:
         """Resolve a path, prepending the fs_root if necessary."""
         p = Path(path)
         if self.fs_root and not p.is_absolute():
-            return self.fs_root / p
-        return p.expanduser().resolve()
+            abs_path = self.fs_root / p
+            logger.debug(f"_abs: prepended fs_root. {path} -> {abs_path}")
+            return abs_path
+        abs_path = p.expanduser().resolve()
+        logger.debug(f"_abs: resolved path. {path} -> {abs_path}")
+        return abs_path
 
     def _infer_runner(self, target: Path) -> Optional[Dict[str, Any]]:
         """Infer a default runner config from common file names."""
+        logger.debug(f"runner(infer): checking for common files in {_short(target)}")
+        # Priority 1: Specific entry points
         if (target / "server.py").exists():
+            logger.info("runner(infer): found 'server.py', inferring python runner.")
             return {"type": "python", "entry": "server.py", "python": {"venv": ".venv"}}
         if (target / "server.js").exists() or (target / "package.json").exists():
             entry = "server.js" if (target / "server.js").exists() else "index.js"
+            logger.info(f"runner(infer): found node files, inferring node runner with entry '{entry}'.")
             return {"type": "node", "entry": entry}
+
+        # Priority 2: Generic Python project files
+        if (target / "pyproject.toml").is_file() or (target / "requirements.txt").is_file() or (target / "setup.py").is_file():
+            logger.info("runner(infer): found python project file. Will synthesize a runner and search for entry points.")
+
+            # --- NEW LOGIC: Run the helper script to find potential servers ---
+            potential_servers = []
+            notes_lines = [
+                "This runner was synthesized because no explicit 'runner.json' was found.",
+                "An entry point could not be automatically determined.",
+                "ACTION REQUIRED: Please edit the 'entry' field below with the correct server file.",
+            ]
+            try:
+                # FIX: Correctly locate the helper script relative to the SDK package structure.
+                # Assuming find_potential_servers.py is in the same directory as installer.py
+                helper_script_path = Path(__file__).parent / "find_potential_servers.py"
+                if not helper_script_path.is_file():
+                    logger.error(f"runner(infer): Helper script not found at expected path: {helper_script_path}")
+                    notes_lines.append("Automated server discovery failed: helper script not found.")
+                else:
+                    cmd = [sys.executable, str(helper_script_path), str(target)]
+                    result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=30)
+                    # Parse the output of the script
+                    found_any = False
+                    for line in result.stdout.splitlines():
+                        if line.startswith("- "):
+                            potential_servers.append(line[2:].strip())
+                            found_any = True
+                    if found_any:
+                        notes_lines.append("Potential entry points found in the project:")
+                        notes_lines.extend([f"  - {s}" for s in potential_servers])
+                    else:
+                        notes_lines.append("No likely server entry points were found during analysis.")
+
+            except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired) as e:
+                logger.warning(f"runner(infer): Could not run server finder script: {e}")
+                notes_lines.append("Automated server discovery failed.")
+            except Exception as e:
+                logger.error(f"runner(infer): An unexpected error occurred running server finder: {e}")
+                notes_lines.append("An unexpected error occurred during server discovery.")
+
+
+            # If we found potential servers, use the first one as a default guess.
+            # Otherwise, use a placeholder that will fail loudly.
+            entry_point = potential_servers[0] if potential_servers else "EDIT_ME.py"
+
+            return {
+                "type": "python",
+                "entry": entry_point,
+                "python": {"venv": ".venv"},
+                "notes": "\n".join(notes_lines)
+            }
+
+        logger.debug("runner(infer): no common files found for inference.")
         return None
 
     def _load_runner_from_report(
         self, report: BuildReport, target_path: Path
     ) -> Dict[str, Any]:
         """Load the runner.json file after materialization."""
+        logger.debug("build: loading runner.json from build report.")
         runner_path = (
             Path(report.runner_path)
             if report.runner_path
             else target_path / "runner.json"
         )
+        logger.debug(f"build: effective runner path is '{_short(runner_path)}'")
         if runner_path.is_file():
             try:
-                return json.loads(runner_path.read_text("utf-8"))
-            except json.JSONDecodeError:
-                logger.error("build: failed to decode runner JSON from %s", runner_path)
-        logger.warning("build: runner.json not found; env prepare may be skipped.")
+                runner_data = json.loads(runner_path.read_text("utf-8"))
+                logger.info(f"build: successfully loaded runner config from {_short(runner_path)}")
+                logger.debug(f"build: loaded runner data: {runner_data}")
+                return runner_data
+            except json.JSONDecodeError as e:
+                logger.error(f"build: failed to decode runner JSON from {_short(runner_path)}: {e}")
+                raise ManifestResolutionError(f"Invalid runner.json at {runner_path}") from e
+
+        logger.warning("build: runner.json not found in %s; env prepare may be skipped.", _short(runner_path.parent))
         return {}
 
 
 # --------------------------------------------------------------------------------------
-# Standalone Helper Functions
+# Standalone Helper Functions (contents omitted for brevity, they are unchanged)
+# ... all functions from _python_bin to the end of the file remain the same ...
 # --------------------------------------------------------------------------------------
 
 
@@ -596,17 +785,42 @@ def _run(cmd: list[str], *, cwd: Path, timeout: int) -> None:
     logger.debug(
         "exec: %s (cwd=%s, timeout=%ss)", " ".join(map(str, cmd)), _short(cwd), timeout
     )
-    subprocess.run(cmd, cwd=str(cwd), check=True, timeout=timeout)
+    try:
+        # Capture output to prevent it from cluttering the main logs unless there's an error
+        result = subprocess.run(cmd, cwd=str(cwd), check=True, timeout=timeout, capture_output=True, text=True, encoding="utf-8", errors="ignore")
+        if result.stdout:
+            logger.debug(f"exec: --- STDOUT ---\n{result.stdout.strip()}")
+        if result.stderr:
+            logger.debug(f"exec: --- STDERR ---\n{result.stderr.strip()}")
+        logger.debug("exec: command finished successfully.")
+    except subprocess.CalledProcessError as e:
+        logger.error(f"exec: command failed with exit code {e.returncode}.")
+        logger.error(f"exec: STDOUT:\n{e.stdout}")
+        logger.error(f"exec: STDERR:\n{e.stderr}")
+        raise
+    except FileNotFoundError as e:
+        logger.error(f"exec: command not found: {cmd[0]}. Is it in the system's PATH? Error: {e}")
+        raise
+    except subprocess.TimeoutExpired as e:
+        logger.error(f"exec: command timed out after {timeout} seconds.")
+        logger.error(f"exec: STDOUT:\n{e.stdout}")
+        logger.error(f"exec: STDERR:\n{e.stderr}")
+        raise
 
 
 def _detect_package_manager(path: Path) -> Optional[str]:
     """Detect the Node.js package manager based on lock files."""
+    logger.debug(f"node: detecting package manager in {_short(path)}")
     if (path / "pnpm-lock.yaml").exists():
+        logger.debug("node: found pnpm-lock.yaml, using pnpm.")
         return "pnpm"
     if (path / "yarn.lock").exists():
+        logger.debug("node: found yarn.lock, using yarn.")
         return "yarn"
     if (path / "package-lock.json").exists() or (path / "package.json").exists():
+        logger.debug("node: found package-lock.json or package.json, using npm.")
         return "npm"
+    logger.debug("node: no lockfile found.")
     return None
 
 
@@ -633,16 +847,21 @@ def _plan_target_for_server(id_str: str, target: str | os.PathLike[str]) -> str:
     alias = (p.parent.name or "runner").strip()
     version = (p.name or "0").strip()
     label = f"{alias}/{version}".replace("\\", "/").lstrip("/")
-    return label or "runner/0"
+    result = label or "runner/0"
+    logger.debug(f"_plan_target_for_server: converted '{target}' to label '{result}'")
+    return result
 
 
 def _ensure_local_writable(path: Path) -> None:
     """Fail fast with a clear error if the target directory isn't writable."""
+    logger.debug(f"Checking write permissions for '{_short(path)}'")
     path.mkdir(parents=True, exist_ok=True)
     probe = path / ".matrix_write_probe"
     try:
         probe.write_text("ok", encoding="utf-8")
+        logger.debug(f"Write probe successful for '{_short(path)}'")
     except Exception as e:  # pragma: no cover
+        logger.error(f"Local install target not writable: {_short(path)} — {e}")
         raise PermissionError(f"Local install target not writable: {path} — {e}") from e
     finally:
         try:
@@ -650,37 +869,83 @@ def _ensure_local_writable(path: Path) -> None:
         except Exception:
             pass
 
+def _pyproject_backend_info(pyproject: Path) -> tuple[Optional[str], bool]:
+    """
+    Return (build_backend, poetry_non_package_mode).
+
+    poetry_non_package_mode is True iff tool.poetry.package-mode == false.
+    Uses a fast, safe fallback to simple string sniffing if a TOML parser
+    is unavailable or the file is malformed.
+    """
+    logger.debug(f"pyproject: analyzing {_short(pyproject)}")
+    if not pyproject.is_file():
+        logger.debug("pyproject: file not found.")
+        return None, False
+
+    try:
+        data = pyproject.read_bytes()
+    except OSError as e:
+        logger.warning(f"pyproject: could not read file: {e}")
+        return None, False
+
+    backend: Optional[str] = None
+    non_package = False
+
+    if _tomllib:
+        logger.debug("pyproject: using toml library for parsing.")
+        try:
+            obj = _tomllib.loads(data.decode("utf-8", "replace"))
+            backend = (obj.get("build-system") or {}).get("build-backend")
+            poetry_tool = (obj.get("tool") or {}).get("poetry", {})
+            pkg_mode = poetry_tool.get("package-mode")
+            if isinstance(pkg_mode, bool):
+                non_package = pkg_mode is False
+            logger.debug(f"pyproject: parsed backend='{backend}', non_package={non_package}")
+        except Exception as e:
+            logger.warning(f"pyproject: toml parsing failed ({e}), falling back to sniffing.")
+            pass
+
+    if backend is None and non_package is False:
+        logger.debug("pyproject: using string sniffing as fallback.")
+        try:
+            s = data.decode("utf-8", "replace").lower()
+            if "build-backend" in s and "poetry.core.masonry.api" in s:
+                backend = "poetry.core.masonry.api"
+            if "[tool.poetry]" in s and "package-mode" in s and "false" in s:
+                non_package = True
+            logger.debug(f"pyproject: sniffed backend='{backend}', non_package={non_package}")
+        except Exception as e:
+            logger.warning(f"pyproject: string sniffing failed: {e}")
+            pass
+
+    return backend, non_package
 
 # ---------------------------- Connector & runner helpers (Refactored) -----------------
 
 
 def _base_url_from_outcome(outcome_or_plan: Dict[str, Any]) -> Optional[str]:
     """Try to locate a provenance base URL for resolving relative runner URLs."""
+    logger.debug("Resolving base URL from provenance...")
     try:
-        for node in (
-            (outcome_or_plan or {}).values()
-            if isinstance(outcome_or_plan, dict)
-            else []
-        ):
+        # Check nested dicts
+        for node in (outcome_or_plan or {}).values() if isinstance(outcome_or_plan, dict) else []:
             if isinstance(node, dict):
                 if (prov := node.get("provenance")) and isinstance(prov, dict):
-                    url = (
-                        prov.get("source_url") or prov.get("manifest_url") or ""
-                    ).strip()
+                    url = (prov.get("source_url") or prov.get("manifest_url") or "").strip()
                     if url:
+                        logger.debug(f"Found base URL in nested provenance: {url}")
                         return url
-        # direct keys (common patterns)
-        prov = (
-            outcome_or_plan.get("provenance")
-            if isinstance(outcome_or_plan, dict)
-            else None
-        )
+        # Check top-level keys
+        prov = outcome_or_plan.get("provenance") if isinstance(outcome_or_plan, dict) else None
         if isinstance(prov, dict):
             url = (prov.get("source_url") or prov.get("manifest_url") or "").strip()
             if url:
+                logger.debug(f"Found base URL in top-level provenance: {url}")
                 return url
-    except Exception:
+    except Exception as e:
+        logger.warning(f"Error while extracting base URL: {e}")
         return None
+    logger.debug("No base URL found in provenance.")
     return None
 
 
@@ -688,15 +953,23 @@ def _resolve_url_with_base(
     raw_url: str, outcome: Dict[str, Any], plan_node: Dict[str, Any]
 ) -> str:
     raw = (raw_url or "").strip()
-    if not raw:
-        return ""
-    # Absolute URL already
+    if not raw: return ""
+
     if "://" in raw:
+        logger.debug(f"URL '{raw}' is already absolute.")
         return raw
+
     base = _base_url_from_outcome(outcome) or _base_url_from_outcome(plan_node) or ""
+    if not base:
+        logger.warning(f"Could not resolve relative URL '{raw}' because no base URL was found.")
+        return raw
+
     try:
-        return urljoin(base, raw) if base else raw
-    except Exception:
+        resolved = urljoin(base, raw)
+        logger.debug(f"Resolved relative URL '{raw}' against base '{base}' -> '{resolved}'")
+        return resolved
+    except Exception as e:
+        logger.error(f"Failed to join base URL '{base}' with '{raw}': {e}")
         return raw
 
 
@@ -705,18 +978,20 @@ def _try_fetch_runner_from_b64(
 ) -> Optional[str]:
     """Strategy 0: Embedded base64 runner (plan.runner_b64)."""
     b64 = (plan_node.get("runner_b64") or "").strip()
-    if not b64:
-        return None
+    if not b64: return None
+    logger.debug("runner(b64): found runner_b64 content.")
     try:
         data = base64.b64decode(b64)
         obj = json.loads(data.decode("utf-8"))
         if _is_valid_runner_schema(obj, logger):
             rp = target_path / "runner.json"
             rp.write_text(json.dumps(obj, indent=2), encoding="utf-8")
-            logger.info("runner: materialized from runner_b64 → %s", _short(rp))
+            logger.info("runner(b64): materialized from runner_b64 → %s", _short(rp))
             return str(rp)
+        else:
+            logger.warning("runner(b64): decoded runner object has invalid schema.")
     except Exception as e:
-        logger.warning("runner: failed to materialize from runner_b64 (%s)", e)
+        logger.warning("runner(b64): failed to materialize from runner_b64 (%s)", e)
     return None
 
 
@@ -725,10 +1000,10 @@ def _try_fetch_runner_from_url(
 ) -> Optional[str]:
     """Strategy 1: Fetch runner from a URL specified in the plan."""
     runner_url = (plan_node.get("runner_url") or "").strip()
-    if not runner_url:
-        return None
+    if not runner_url: return None
+
     resolved = _resolve_url_with_base(runner_url, args[-1] if args else {}, plan_node)
-    logger.info("runner: fetching from runner_url → %s", resolved)
+    logger.info("runner(url): fetching from resolved runner_url → %s", resolved)
     try:
         with urllib.request.urlopen(resolved, timeout=HTTP_TIMEOUT) as resp:
             data = resp.read().decode("utf-8")
@@ -736,12 +1011,12 @@ def _try_fetch_runner_from_url(
         if _is_valid_runner_schema(obj, logger):
             rp = target_path / "runner.json"
             rp.write_text(json.dumps(obj, indent=2), encoding="utf-8")
-            logger.info("runner: saved fetched runner.json → %s", _short(rp))
+            logger.info("runner(url): saved fetched runner.json → %s", _short(rp))
             return str(rp)
         else:
-            logger.warning("runner: invalid schema from runner_url (ignored)")
+            logger.warning("runner(url): invalid schema from runner_url (ignored)")
     except Exception as e:
-        logger.warning("runner: failed to fetch runner_url (%s)", e)
+        logger.warning("runner(url): failed to fetch runner_url (%s)", e)
     return None
 
 
@@ -749,13 +1024,13 @@ def _try_find_runner_from_object(
     installer: LocalInstaller, plan_node: Dict, target_path: Path, *args
 ) -> Optional[str]:
     """Strategy 2: Find runner from a direct object in the plan."""
-    if (runner_obj := plan_node.get("runner")) and isinstance(runner_obj, dict):
+    runner_obj = plan_node.get("runner")
+    if isinstance(runner_obj, dict):
+        logger.debug("runner(object): found runner object in plan.")
         if _is_valid_runner_schema(runner_obj, logger):
             runner_path = target_path / "runner.json"
             runner_path.write_text(json.dumps(runner_obj, indent=2), encoding="utf-8")
-            logger.info(
-                "runner: materialized from plan.runner object → %s", _short(runner_path)
-            )
+            logger.info("runner(object): materialized from plan.runner object → %s", _short(runner_path))
             return str(runner_path)
     return None
 
@@ -766,222 +1041,38 @@ def _try_find_runner_in_embedded_manifest(
     target_path: Path,
     outcome: Dict[str, Any],
 ) -> Optional[str]:
-    """
-    Strategy: If the plan/outcome carries a manifest object:
-
-    • v2 path: manifest['runner'] exists → validate & write runner.json
-    • v1 path: no runner, but MCP server URL present → synthesize connector runner
-
-    Works on common keys: 'manifest', 'source_manifest', 'echo_manifest', 'input_manifest'.
-    """
-    # Look for any embedded manifest-like dicts
+    """Strategy: Look in embedded manifest objects for a 'runner' (v2) or synthesize one (v1)."""
     candidate_keys = ("manifest", "source_manifest", "echo_manifest", "input_manifest")
     nodes: List[Dict[str, Any]] = []
 
     for container in (plan_node, outcome):
-        if not isinstance(container, dict):
-            continue
-        for k in candidate_keys:
-            v = container.get(k)
-            if isinstance(v, dict):
-                nodes.append(v)
+        if isinstance(container, dict):
+            for k in candidate_keys:
+                if isinstance(v := container.get(k), dict):
+                    nodes.append(v)
 
-    if not nodes:
-        return None
+    if not nodes: return None
+    logger.debug(f"runner(manifest): found {len(nodes)} embedded manifest candidate(s).")
 
-    # 1) v2: manifest has embedded 'runner'
+    # v2 path: manifest['runner']
     for m in nodes:
-        try:
-            r = m.get("runner")
-            if isinstance(r, dict) and _is_valid_runner_schema(r, logger):
+        if isinstance(r := m.get("runner"), dict) and _is_valid_runner_schema(r, logger):
+            rp = target_path / "runner.json"
+            rp.write_text(json.dumps(r, indent=2), encoding="utf-8")
+            logger.info("runner(manifest): materialized from embedded manifest.runner (v2) → %s", _short(rp))
+            return str(rp)
+
+    # v1 path: synthesize from server URL
+    for m in nodes:
+        if url := _url_from_manifest(m):
+            logger.debug(f"runner(manifest): found server URL '{url}' for v1 synthesis.")
+            connector = _make_connector_runner(url)
+            if _is_valid_runner_schema(connector, logger):
                 rp = target_path / "runner.json"
-                rp.write_text(json.dumps(r, indent=2), encoding="utf-8")
-                logger.info(
-                    "runner: materialized from embedded manifest.runner → %s",
-                    _short(rp),
-                )
+                rp.write_text(json.dumps(connector, indent=2), encoding="utf-8")
+                logger.info("runner(manifest): synthesized from embedded manifest server URL (v1) → %s", _short(rp))
                 return str(rp)
-        except Exception:
-            # Fall through to v1 synthesis
-            pass
-
-    # 2) v1: no runner; try to synthesize connector runner from manifest server URL
-    for m in nodes:
-        try:
-            url = _url_from_manifest(m)  # already normalizes to /sse
-            if url:
-                connector = {
-                    "type": "connector",
-                    "integration_type": "MCP",
-                    "request_type": "SSE",
-                    "url": url,
-                    "endpoint": "/sse",
-                    "headers": {},
-                }
-                if _is_valid_runner_schema(connector, logger):
-                    rp = target_path / "runner.json"
-                    rp.write_text(json.dumps(connector, indent=2), encoding="utf-8")
-                    logger.info(
-                        "runner: synthesized from embedded manifest server URL → %s",
-                        _short(rp),
-                    )
-                    return str(rp)
-        except Exception:
-            pass
-
     return None
-
-
-def _try_fetch_runner_from_manifest_url_old(
-    installer: "LocalInstaller",
-    plan_node: Dict[str, Any],
-    target_path: Path,
-    outcome: Dict[str, Any],
-) -> Optional[str]:
-    """
-    Strategy: If no runner is provided but we have a provenance/source URL to a manifest,
-    fetch it (opt-in) and synthesize a connector runner from its MCP server URL.
-    """
-    allow = (os.getenv("MATRIX_SDK_ALLOW_MANIFEST_FETCH") or "1").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-    if not allow:
-        return None
-
-    src = (
-        plan_node.get("manifest_url")
-        or (plan_node.get("provenance") or {}).get("source_url")
-        or (outcome.get("provenance") or {}).get("source_url")
-        or ""
-    )
-    src = (src or "").strip()
-    if not src:
-        return None
-
-    try:
-        with urllib.request.urlopen(src, timeout=HTTP_TIMEOUT) as resp:
-            data = resp.read().decode("utf-8")
-        manifest = json.loads(data)
-        url = _url_from_manifest(manifest)
-        if url:
-            rp = target_path / "runner.json"
-            connector = {
-                "type": "connector",
-                "integration_type": "MCP",
-                "request_type": "SSE",
-                "url": url,
-                "endpoint": "/sse",
-                "headers": {},
-            }
-            rp.write_text(json.dumps(connector, indent=2), encoding="utf-8")
-            logger.info(
-                "runner: synthesized from fetched manifest_url → %s", _short(rp)
-            )
-            return str(rp)
-    except Exception as e:
-        logger.debug("runner: manifest_url fetch/synthesis failed: %s", e)
-    return None
-
-def _try_fetch_runner_from_manifest_url(
-    installer: LocalInstaller, plan_node: Dict, target_path: Path, outcome: Dict
-) -> Optional[str]:
-    """Strategy 6: fetch a manifest and synthesize a connector runner if possible.
-
-    Controlled by env MATRIX_SDK_ALLOW_MANIFEST_FETCH (default: on). Optional domain
-    allowlist via MATRIX_SDK_MANIFEST_DOMAINS.
-
-    Enhancement: If the plan lacks provenance/source_url, perform a narrow catalog
-    search for the exact fqid (tool:name@version) to discover entity.source_url.
-    """
-    if not _env_bool("MATRIX_SDK_ALLOW_MANIFEST_FETCH", True):
-        return None
-
-    # 1) Prefer plan/outcome-provided manifest URL (unchanged)
-    src = (
-        (plan_node.get("manifest_url") or "").strip()
-        or ((plan_node.get("provenance") or {}).get("source_url") or "").strip()
-        or ((outcome.get("provenance") or {}).get("source_url") or "").strip()
-    )
-
-    # 2) If missing, try Hub search to resolve the *tool* source_url (new)
-    if not src:
-        try:
-            # Extract fully-qualified id if present (e.g., tool:watsonx-chat@0.1.0)
-            fid = (
-                (outcome.get("id") or "")
-                or (plan_node.get("id") or "")
-                or ((outcome.get("plan") or {}).get("id") or "")
-            ).strip()
-
-            ns = name = ver = None
-            if ":" in fid and "@" in fid:
-                ns, rest = fid.split(":", 1)
-                name, ver = rest.rsplit("@", 1)
-                ns = (ns or "").lower()
-
-            # Only search if we have name+version; prefer type 'tool'
-            if name and ver:
-                search_type = ns or "tool"
-
-                def _items_from(payload: Any) -> list[dict]:
-                    if isinstance(payload, dict):
-                        seq = payload.get("items") or payload.get("results")
-                        return seq if isinstance(seq, list) else []
-                    return payload if isinstance(payload, list) else []
-
-                # Ask the catalog once (include_pending to support dev catalogs)
-                payload = installer.client.search(  # type: ignore[attr-defined]
-                    q=name, type=search_type, limit=25, include_pending=True
-                )
-                for it in _items_from(payload):
-                    iid = (it.get("id") or "").strip()
-                    t = (it.get("type") or it.get("entity_type") or "").strip().lower()
-                    n = (it.get("name") or "").strip()
-                    v = (it.get("version") or "").strip()
-
-                    exact_match = (iid == fid)
-                    tool_match = (t == "tool" and n == name and v == ver)
-
-                    if exact_match or tool_match:
-                        cand = (
-                            (it.get("source_url") or "").strip()
-                            or ((it.get("provenance") or {}).get("source_url") or "").strip()
-                        )
-                        if cand:
-                            src = cand
-                            break
-        except Exception:
-            src = ""
-
-    if not src:
-        return None
-
-    resolved = _resolve_url_with_base(src, outcome, plan_node)
-    if not _host_allowed(resolved):
-        logger.debug("runner: manifest host not allowed: %s", resolved)
-        return None
-
-    # 3) Download manifest + synthesize connector runner from server URL
-    try:
-        with urllib.request.urlopen(resolved, timeout=HTTP_TIMEOUT) as resp:
-            data = resp.read().decode("utf-8")
-        manifest = json.loads(data)
-        url = _url_from_manifest(manifest)  # normalizes to /sse
-        if url:
-            rp = target_path / "runner.json"
-            rp.write_text(
-                json.dumps(_make_connector_runner(url), indent=2), encoding="utf-8"
-            )
-            logger.info("runner: synthesized from manifest_url → %s", _short(rp))
-            return str(rp)
-    except Exception as e:
-        logger.debug("runner: manifest_url fetch/synthesis failed: %s", e)
-
-    return None
-
 
 
 def _try_find_runner_from_file(
@@ -991,14 +1082,15 @@ def _try_find_runner_from_file(
     runner_file_name = (plan_node.get("runner_file") or "runner.json").strip()
     runner_file_name = runner_file_name.replace("\\", "/").lstrip("/")
     runner_path = (target_path / runner_file_name).resolve()
+    logger.debug(f"runner(file): checking for file at {_short(runner_path)}")
     if runner_path.is_file():
         try:
             data = json.loads(runner_path.read_text("utf-8"))
             if _is_valid_runner_schema(data, logger):
-                logger.info("runner: found runner file at %s", _short(runner_path))
+                logger.info("runner(file): found valid runner file at %s", _short(runner_path))
                 return str(runner_path)
         except json.JSONDecodeError:
-            logger.warning("runner: file exists but is not valid JSON: %s", runner_path)
+            logger.warning("runner(file): file exists but is not valid JSON: %s", runner_path)
     return None
 
 
@@ -1009,21 +1101,18 @@ def _try_find_runner_via_shallow_search(
     runner_file_name = (plan_node.get("runner_file") or "runner.json").strip()
     search_depth = max(0, RUNNER_SEARCH_DEPTH_DEFAULT)
     is_bare_name = "/" not in runner_file_name and "\\" not in runner_file_name
+
     if search_depth and is_bare_name:
-        if found := _find_runner_file_shallow(
-            target_path, runner_file_name, search_depth
-        ):
+        logger.debug(f"runner(search): starting shallow search for '{runner_file_name}' (depth={search_depth})")
+        if found := _find_runner_file_shallow(target_path, runner_file_name, search_depth):
             try:
                 data = json.loads(found.read_text("utf-8"))
                 if _is_valid_runner_schema(data, logger):
-                    logger.info("runner: discovered %s", _short(found))
+                    logger.info("runner(search): discovered valid runner at %s", _short(found))
                     return str(found)
             except json.JSONDecodeError:
-                logger.warning("runner: discovered but invalid JSON: %s", found)
+                logger.warning("runner(search): discovered file but it's invalid JSON: %s", found)
     return None
-
-
-# --- NEW: synthesize runner via manifest URL (opt-in, safe) ---
 
 
 def _make_connector_runner(url: str) -> Dict[str, Any]:
@@ -1038,58 +1127,49 @@ def _make_connector_runner(url: str) -> Dict[str, Any]:
 
 
 def _host_allowed(url: str) -> bool:
-    """Optional domain allowlist for manifest fetches.
-
-    MATRIX_SDK_MANIFEST_DOMAINS: comma-separated hostnames. If unset/empty → allow all.
-    """
+    """Optional domain allowlist for manifest fetches."""
     raw = (os.getenv("MATRIX_SDK_MANIFEST_DOMAINS") or "").strip()
-    if not raw:
-        return True
+    if not raw: return True
+
     host = urlparse(url).hostname or ""
     allowed = {h.strip().lower() for h in raw.split(",") if h.strip()}
-    return host.lower() in allowed if allowed else True
+    logger.debug(f"runner(manifest_url): checking host '{host}' against allowlist: {allowed}")
+    return host.lower() in allowed
 
 
 def _try_fetch_runner_from_manifest_url(
     installer: LocalInstaller, plan_node: Dict, target_path: Path, outcome: Dict
 ) -> Optional[str]:
-    """Strategy 6: fetch a manifest and synthesize a connector runner if possible.
-
-    Controlled by env MATRIX_SDK_ALLOW_MANIFEST_FETCH (default: on). Optional domain
-    allowlist via MATRIX_SDK_MANIFEST_DOMAINS.
-    """
+    """Strategy 6: fetch a manifest and synthesize a connector runner if possible."""
     if not _env_bool("MATRIX_SDK_ALLOW_MANIFEST_FETCH", True):
+        logger.debug("runner(manifest_url): skipping, disabled by env var.")
         return None
 
-    # Try various locations for a manifest URL, and resolve relative URLs if needed
     src = (
         plan_node.get("manifest_url")
         or (plan_node.get("provenance") or {}).get("source_url")
         or (outcome.get("provenance") or {}).get("source_url")
         or ""
     ).strip()
-    if not src:
-        return None
+    if not src: return None
 
     resolved = _resolve_url_with_base(src, outcome, plan_node)
     if not _host_allowed(resolved):
-        logger.debug("runner: manifest host not allowed: %s", resolved)
+        logger.debug("runner(manifest_url): host not allowed: %s", resolved)
         return None
 
+    logger.debug(f"runner(manifest_url): attempting to fetch manifest from {resolved}")
     try:
         with urllib.request.urlopen(resolved, timeout=HTTP_TIMEOUT) as resp:
             data = resp.read().decode("utf-8")
         manifest = json.loads(data)
-        url = _url_from_manifest(manifest)
-        if url:
+        if url := _url_from_manifest(manifest):
+            logger.info(f"runner(manifest_url): found server URL '{url}', synthesizing runner.")
             rp = target_path / "runner.json"
-            rp.write_text(
-                json.dumps(_make_connector_runner(url), indent=2), encoding="utf-8"
-            )
-            logger.info("runner: synthesized from manifest_url → %s", _short(rp))
+            rp.write_text(json.dumps(_make_connector_runner(url), indent=2), encoding="utf-8")
             return str(rp)
     except Exception as e:
-        logger.debug("runner: manifest_url fetch/synthesis failed: %s", e)
+        logger.debug("runner(manifest_url): fetch/synthesis failed: %s", e)
     return None
 
 
@@ -1101,7 +1181,7 @@ def _try_infer_runner_from_structure(
         if _is_valid_runner_schema(inferred, logger):
             inferred_path = target_path / "runner.json"
             inferred_path.write_text(json.dumps(inferred, indent=2), encoding="utf-8")
-            logger.info("runner: inferred from structure → %s", _short(inferred_path))
+            logger.info("runner(infer): inferred from structure → %s", _short(inferred_path))
             return str(inferred_path)
     return None
 
@@ -1111,22 +1191,13 @@ def _try_synthesize_connector_runner(
 ) -> Optional[str]:
     """Strategy 8: Synthesize a connector runner from manifest data."""
     if _connector_enabled():
-        url = _extract_mcp_sse_url(outcome) or _extract_mcp_sse_url(plan_node)
-        if url:
-            connector = {
-                "type": "connector",
-                "integration_type": "MCP",
-                "request_type": "SSE",
-                "url": url,
-                "endpoint": "/sse",
-                "headers": {},
-            }
+        logger.debug("runner(synth): connector synthesis is enabled, searching for MCP/SSE URL.")
+        if url := _extract_mcp_sse_url(outcome) or _extract_mcp_sse_url(plan_node):
+            logger.info(f"runner(synth): found MCP/SSE URL '{url}', synthesizing connector.")
+            connector = _make_connector_runner(url)
             if _is_valid_runner_schema(connector, logger):
                 synth_path = target_path / "runner.json"
                 synth_path.write_text(json.dumps(connector, indent=2), encoding="utf-8")
-                logger.info(
-                    "runner: synthesized MCP/SSE connector runner → %s", synth_path
-                )
                 return str(synth_path)
     return None
 
@@ -1135,14 +1206,13 @@ def _ensure_sse_url(url: str) -> str:
     """Normalize a server URL to end with '/sse' (no trailing slash)."""
     try:
         url = (url or "").strip()
-        if not url:
-            return ""
+        if not url: return ""
         parsed = urlparse(url)
         path = (parsed.path or "").strip()
         if path.endswith("/sse/"):
             path = path[:-1]
         elif not path.endswith("/sse"):
-            path = (path.rstrip("/")) + "/sse"
+            path = path.rstrip("/") + "/sse"
         return urlunparse((parsed.scheme, parsed.netloc, path, "", "", ""))
     except Exception:
         return url
@@ -1162,12 +1232,10 @@ def _url_from_manifest(m: Dict[str, Any]) -> str:
 def _extract_mcp_sse_url(node: Any) -> str | None:  # noqa: C901
     """Recursively walk a dictionary or list to find an MCP/SSE URL."""
     if isinstance(node, dict):
-        # Prioritize manifest keys for direct lookup
         for key in ("manifest", "source_manifest", "echo_manifest", "input_manifest"):
             if key in node and isinstance(node[key], dict):
                 if url := _url_from_manifest(node[key]):
                     return url
-        # Generic recursive search on values
         for v in node.values():
             if url := _extract_mcp_sse_url(v):
                 return url
@@ -1180,19 +1248,16 @@ def _extract_mcp_sse_url(node: Any) -> str | None:  # noqa: C901
 
 def _find_runner_file_shallow(root: Path, name: str, max_depth: int) -> Optional[Path]:
     """Perform a limited-depth, breadth-first search for a runner file."""
-    if max_depth <= 0:
-        return None
-
+    if max_depth <= 0: return None
     from collections import deque
-
     queue: deque[tuple[Path, int]] = deque([(root, 0)])
     visited: set[Path] = {root}
-
+    logger.debug(f"Shallow search started for '{name}' from '{_short(root)}'")
     while queue:
         current_path, current_depth = queue.popleft()
-
         candidate = current_path / name
         if candidate.is_file():
+            logger.debug(f"Shallow search found at '{_short(candidate)}'")
             return candidate
 
         if current_depth < max_depth:
@@ -1201,7 +1266,8 @@ def _find_runner_file_shallow(root: Path, name: str, max_depth: int) -> Optional
                     if child.is_dir() and child not in visited:
                         visited.add(child)
                         queue.append((child, current_depth + 1))
-            except OSError:
+            except OSError as e:
+                logger.debug(f"Shallow search could not list dir '{_short(current_path)}': {e}")
                 continue
-
+    logger.debug(f"Shallow search for '{name}' finished, no file found.")
     return None

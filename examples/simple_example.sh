@@ -16,10 +16,15 @@ export PYTHONPATH="${PYTHONPATH:-}:${ROOT_DIR}"
 # Set the Matrix Hub URL (can be overridden by an environment variable)
 export MATRIX_HUB_BASE="${MATRIX_HUB_BASE:-https://api.matrixhub.io}"
 
+# --- ADDED FOR DEBUGGING ---
+# Enable verbose logging from the Matrix SDK installer
+export MATRIX_SDK_DEBUG="1"
+
 # --- Python Driver Script ---
 # The following Python code is executed directly by the shell script.
 python - <<'END_PYTHON'
 import time
+import os
 from matrix_sdk.client import MatrixClient
 from matrix_sdk.installer import LocalInstaller
 from matrix_sdk import runtime
@@ -29,13 +34,13 @@ COMPONENT_ID = "mcp_server:hello-sse-server@0.1.0"
 ALIAS = "hello-sse-example"
 
 print(f"--- Starting Matrix SDK Simple Example ---")
-print(f"HUB URL: {runtime.os.getenv('MATRIX_HUB_BASE')}")
+print(f"HUB URL: {os.getenv('MATRIX_HUB_BASE')}")
 print(f"COMPONENT: {COMPONENT_ID}")
 print("-" * 40)
 
 try:
     # 1. Initialize the client and installer
-    client = MatrixClient(base_url=runtime.os.getenv("MATRIX_HUB_BASE"))
+    client = MatrixClient(base_url=os.getenv("MATRIX_HUB_BASE"))
     installer = LocalInstaller(client)
 
     # 2. Install the component locally
