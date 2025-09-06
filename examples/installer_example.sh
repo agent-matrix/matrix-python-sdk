@@ -1,0 +1,1 @@
+python examples/installer_example.py

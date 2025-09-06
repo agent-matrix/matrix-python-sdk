@@ -2,7 +2,9 @@
 # Loads .env/.env.local (if present) and provides helpers for tests.
 from __future__ import annotations
 
+import json
 import os
+from pathlib import Path
 from typing import Callable, Optional
 
 import httpx
@@ -47,7 +49,7 @@ def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line("markers", "live: test that may hit a real Matrix Hub")
 
 
-# ---- fixtures ----------------------------------------------------------------
+# ---- fixtures (existing, unchanged) -----------------------------------------
 @pytest.fixture
 def mock_transport_factory() -> (
     Callable[[Callable[[httpx.Request], httpx.Response]], httpx.MockTransport]
@@ -107,3 +109,92 @@ def hub_headers(hub_token: Optional[str]) -> dict[str, str]:
     if hub_token:
         h["Authorization"] = f"Bearer {hub_token}"
     return h
+
+
+# ---- new fixtures (additive, non-breaking) ----------------------------------
+
+
+@pytest.fixture
+def is_windows() -> bool:
+    """True on Windows, else False. Useful for path assertions."""
+    return os.name == "nt"
+
+
+@pytest.fixture
+def installer_env(monkeypatch: pytest.MonkeyPatch):
+    """
+    Stable env defaults for installer tests (opt-in).
+    Nothing global; only applied when the test requests this fixture.
+    """
+    # Keep connector strategies enabled by default in tests.
+    monkeypatch.setenv("MATRIX_SDK_ENABLE_CONNECTOR", "1")
+    # Make network-related tests fast & deterministic.
+    monkeypatch.setenv("MATRIX_SDK_HTTP_TIMEOUT", "5")
+    # Keep shallow search predictable.
+    monkeypatch.setenv("MATRIX_SDK_RUNNER_SEARCH_DEPTH", "2")
+    # Allow resolving relative manifest/runner URLs without host restrictions in tests.
+    # (Leave unset if your CI wants to exercise allowlisting.)
+    monkeypatch.setenv("MATRIX_SDK_MANIFEST_DOMAINS", "")
+    # Opt-in verbose installer logs only if requested at runtime
+    # (do NOT force on; preserve host project logging control).
+    if os.getenv("MATRIX_SDK_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}:
+        monkeypatch.setenv(
+            "MATRIX_SDK_DEBUG", os.getenv("MATRIX_SDK_DEBUG")
+        )  # no-op but explicit
+    yield
+
+
+@pytest.fixture
+def chdir_tmp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """
+    Change the CWD to a dedicated tmp dir for the test. Handy when code expects
+    to run relative to the project root.
+    """
+    monkeypatch.chdir(tmp_path)
+    return tmp_path
+
+
+@pytest.fixture
+def make_tree(tmp_path: Path) -> Callable[[dict[str, str | bytes]], Path]:
+    """
+    Build a small project tree under tmp_path from a mapping:
+        {"a/b.txt": "content", "bin/app": b"..."}
+    Returns tmp_path for convenience.
+    """
+
+    def _make(spec: dict[str, str | bytes]) -> Path:
+        for rel, content in spec.items():
+            p = tmp_path / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            if isinstance(content, bytes):
+                p.write_bytes(content)
+            else:
+                p.write_text(content, encoding="utf-8")
+        return tmp_path
+
+    return _make
+
+
+@pytest.fixture
+def write_json(tmp_path: Path) -> Callable[[str | Path, dict], Path]:
+    """
+    Convenience to write JSON under tmp_path.
+        p = write_json("runner.json", {"type": "python", "entry": "server.py"})
+    """
+
+    def _write(rel: str | Path, data: dict) -> Path:
+        p = tmp_path / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        return p
+
+    return _write
+
+
+@pytest.fixture
+def caplog_debug(caplog: pytest.LogCaptureFixture) -> pytest.LogCaptureFixture:
+    """
+    Set DEBUG level for the installer logger only when the test requests it.
+    """
+    caplog.set_level("DEBUG", logger="matrix_sdk.installer")
+    return caplog
