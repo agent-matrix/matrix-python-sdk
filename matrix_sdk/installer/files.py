@@ -1,6 +1,4 @@
 # SPDX-License-Identifier: MIT
-from __future__ import annotations
-
 """File & artifact IO (pure IO; no schema logic).
 
 Public functions (used by core.py):
@@ -15,12 +13,16 @@ Design goals:
     * Lazy-import artifact fetchers; run only when specified by the plan.
     * Small, robust logs – INFO for summary/decisions, DEBUG for details.
 """
+from __future__ import annotations
 
 import base64
 import logging
 import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+# Production fix: surface artifact failures as manifest-resolution errors
+from ..manifest import ManifestResolutionError
 
 # ----------------------------------------------------------------------------
 # Centralized logger / helpers (with safe fallback during migration)
@@ -68,9 +70,6 @@ except Exception:  # pragma: no cover
     class ArchiveFetchError(RuntimeError):  # type: ignore
         pass
 
-
-# Production fix: surface artifact failures as manifest-resolution errors
-from ..manifest import ManifestResolutionError
 
 __all__ = [
     "find_file_candidates",

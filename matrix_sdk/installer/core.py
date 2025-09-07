@@ -1,6 +1,4 @@
 # SPDX-License-Identifier: MIT
-from __future__ import annotations
-
 """Installer orchestration (public API).
 
 This module exposes the public orchestration surface for local installs:
@@ -9,10 +7,10 @@ This module exposes the public orchestration surface for local installs:
 - ``BuildReport``, ``EnvReport``, ``BuildResult``: dataclasses for structured results
 
 It delegates all heavy lifting to small, testable submodules:
-- ``installer.files``              → file writes & artifact fetching
+- ``installer.files``               → file writes & artifact fetching
 - ``installer.runner_discovery``   → strategy pipeline to produce ``runner.json``
-- ``installer.envs``               → Python/Node environment preparation
-- ``installer.util``               → logging & small helpers
+- ``installer.envs``                 → Python/Node environment preparation
+- ``installer.util``                 → logging & small helpers
 
 Design goals
 ------------
@@ -21,6 +19,7 @@ Design goals
   and to ease incremental refactors.
 - Preserve backwards compatibility and current behavior.
 """
+from __future__ import annotations
 
 import json
 import logging
@@ -184,7 +183,7 @@ class LocalInstaller:
         from .runner_discovery import materialize_runner as _materialize_runner
 
         files_written = _materialize_files(outcome, target_path)
-        #        plan_node = outcome.get("plan", outcome)
+        # 		plan_node = outcome.get("plan", outcome)
         plan_node = outcome.get("plan") or outcome
 
         artifacts_fetched = _materialize_artifacts(plan_node, target_path)
@@ -381,14 +380,16 @@ class LocalInstaller:
             or (target / "setup.py").is_file()
         ):
             logger.info(
-                "runner(infer): found python project file. Will synthesize a runner and search for entry points."
+                "runner(infer): found python project file. "
+                "Will synthesize a runner and search for entry points."
             )
 
             potential_servers: List[str] = []
             notes_lines = [
                 "This runner was synthesized because no explicit 'runner.json' was found.",
                 "An entry point could not be automatically determined.",
-                "ACTION REQUIRED: Please edit the 'entry' field below with the correct server file.",
+                "ACTION REQUIRED: Please edit the 'entry' field below "
+                "with the correct server file.",
             ]
 
             # Try local script path first; if missing (e.g., zip/egg), fall back to -m invocation.

@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: MIT
 from __future__ import annotations
 
+from typing import Final
+
 """
 Matrix SDK — Installer subpackage (internal)
 
@@ -17,12 +19,10 @@ Submodules
 - core.py              → LocalInstaller + Build* dataclasses (orchestration)
 - runner_schema.py     → validators, coercers, URL helpers (pure)
 - runner_discovery.py  → runner discovery strategies
-- files.py             → file writes & artifact fetching
-- envs.py              → Python/Node environment preparation
-- util.py              → env flags, logging setup, small helpers
+- files.py               → file writes & artifact fetching
+- envs.py                → Python/Node environment preparation
+- util.py                → env flags, logging setup, small helpers
 """
-
-from typing import Final
 
 __all__ = [
     # Public orchestration API

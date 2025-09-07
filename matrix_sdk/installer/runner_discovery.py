@@ -1,6 +1,4 @@
 # SPDX-License-Identifier: MIT
-from __future__ import annotations
-
 """Runner discovery strategies (well-logged, cross-platform, production-grade).
 
 Public:
@@ -22,6 +20,7 @@ MATRIX_SDK_HTTP_TIMEOUT           (seconds)      network timeout (also via util.
 MATRIX_SDK_RUNNER_SEARCH_DEPTH    (int)          depth for shallow search (also via util)
 MATRIX_SDK_DEBUG                  (bool)         enable debug logging handler in util
 """
+from __future__ import annotations
 
 import base64
 import io
@@ -33,6 +32,15 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import urljoin, urlparse
+
+# Schema helpers
+from .runner_schema import (
+    _coerce_runner_to_legacy_process,
+    _ensure_sse_url,
+    _extract_mcp_sse_url,
+    _is_valid_runner_schema,
+    _url_from_manifest,
+)
 
 # -----------------------------------------------------------------------------
 # Centralized helpers (with safe fallbacks during migration)
@@ -75,16 +83,9 @@ except Exception:  # pragma: no cover - transitional fallback
         (os.getenv("MATRIX_SDK_RUNNER_SEARCH_DEPTH") or 2)
     )
 
+
 logger = _LOGGER
 
-# Schema helpers
-from .runner_schema import (
-    _coerce_runner_to_legacy_process,
-    _ensure_sse_url,
-    _extract_mcp_sse_url,
-    _is_valid_runner_schema,
-    _url_from_manifest,
-)
 
 __all__ = ["materialize_runner"]
 

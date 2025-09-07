@@ -1,6 +1,4 @@
 # SPDX-License-Identifier: MIT
-from __future__ import annotations
-
 """Python/Node environment preparation (OS‑sensitive).
 
 Public API (used by core.py):
@@ -22,6 +20,7 @@ Design:
     * Lazy import of optional modules (python_builder).
     * Small, actionable logs. INFO for decisions; DEBUG for details.
 """
+from __future__ import annotations
 
 import inspect
 import logging
@@ -232,9 +231,9 @@ def _try_legacy_install(
     """Search and install dependencies from conventional files.
 
     Order:
-      1) runner[python][requirements]
-      2) requirements.txt
-      3) pyproject.toml / setup.py (editable if enabled)
+        1) runner[python][requirements]
+        2) requirements.txt
+        3) pyproject.toml / setup.py (editable if enabled)
     """
     logger.debug("env(python): legacy dep search…")
 

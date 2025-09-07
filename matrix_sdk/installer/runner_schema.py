@@ -1,6 +1,4 @@
 # SPDX-License-Identifier: MIT
-from __future__ import annotations
-
 """Runner schema helpers (pure, fast, testable).
 
 This module defines **pure functions** used by the installer to validate and
@@ -23,6 +21,7 @@ Functions
 
 All functions are side-effect free and safe to unit-test.
 """
+from __future__ import annotations
 
 import logging
 import os

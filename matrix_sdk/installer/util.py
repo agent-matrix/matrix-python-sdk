@@ -1,6 +1,4 @@
 # SPDX-License-Identifier: MIT
-from __future__ import annotations
-
 """Shared utilities and constants for the installer package.
 
 Design goals
@@ -22,6 +20,7 @@ Public API
 - _plan_target_for_server(id_str, target) -> str
 - _ensure_local_writable(path: Path) -> None
 """
+from __future__ import annotations
 
 import logging
 import os

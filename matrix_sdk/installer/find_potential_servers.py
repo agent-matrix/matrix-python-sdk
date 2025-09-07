@@ -3,8 +3,6 @@
 # file: matrix_sdk/installer/find_potential_servers.py (Refactored)
 # ===================================================================
 # SPDX-License-Identifier: MIT
-from __future__ import annotations
-
 """
 Heuristically locate and rank likely server entry points in a project tree
 for Python, Node.js/TypeScript, and Go.
@@ -27,6 +25,7 @@ Environment toggles:
   MATRIX_FINDER_MAX_READ_BYTES   (int, default 131072)    – bytes read per file
   MATRIX_FINDER_SKIP_DIRS        (csv)                    – extra dirs to skip
 """
+from __future__ import annotations
 
 import argparse
 import json
@@ -731,7 +730,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             print("\n--- Debug Info ---", file=sys.stderr)
             for c in results:
                 print(
-                    f"[debug] score={c.score:<4} path={c.rel_path.as_posix():<40} reasons={', '.join(c.reasons)}",
+                    (
+                        f"[debug] score={c.score:<4} path={c.rel_path.as_posix():<40} "
+                        f"reasons={', '.join(c.reasons)}"
+                    ),
                     file=sys.stderr,
                 )
 
