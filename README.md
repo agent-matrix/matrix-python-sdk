@@ -10,35 +10,31 @@
 Built for teams that need **fast discovery**, **reproducible installs**, and **safe runtime** operations at scale.
 
 ---
+## What’s new in 0.1.9
 
-## What’s new in 0.1.6
+A focused, compatibility-preserving refresh.
 
-* **Connector runner (attach mode) — opt-in when no local process**
-  If an install plan produces **no runner** but the manifest clearly specifies an **MCP/SSE URL**, the SDK now synthesizes a lightweight **connector** runner:
+* **Modular installer** with legacy import preserved:
 
-  ```json
-  {
-    "type": "connector",
-    "integration_type": "MCP",
-    "request_type": "SSE",
-    "url": "http://127.0.0.1:6288/sse",
-    "endpoint": "/sse",
-    "headers": {}
-  }
+  ```python
+  from matrix_sdk.installer import LocalInstaller
   ```
 
-  Gate with `MATRIX_SDK_ENABLE_CONNECTOR=1` (defaults **on**). Existing Python/Node runners are unchanged.
+  Internals split into `installer/core.py`, `runner_schema.py`, `runner_discovery.py`, `envs.py`, `util.py`.
 
-* **Runtime support for connectors**
-  `matrix_sdk.runtime.start()` detects `runner.type=="connector"` and **does not spawn a process**. It writes a lock with `pid=0`, `port=None`, and the **URL**; `stop()` becomes a safe no-op (removes lock), and `doctor()` returns **ok** with a helpful message (optionally probing the URL).
+* **Runner discovery** restored to legacy strategy order with modern safeguards:
+  b64 → URL → object → embedded manifest → file → shallow search → manifest URL (opt-in) → infer by structure → **connector** fallback.
 
-* **Windows venv robustness**
-  When creating virtual environments, if `venv.create(..., symlinks=True)` fails on Windows, the SDK **retries with `symlinks=False`**. This is non-breaking and improves reliability on managed machines.
+* **Connector synthesis** (attach mode): auto-generates minimal
+  `{"type":"connector","url":"…/sse"}` when an MCP/SSE endpoint is found. Gate via `MATRIX_SDK_ENABLE_CONNECTOR=1` (default **on**).
 
-* **Safer planning defaults**
-  The CLI/SDK continue to avoid sending **absolute local paths** to the Hub by converting targets to a safe `<alias>/<version>` label.
+* **Windows venv reliability**: venv creation retries without symlinks when required.
 
-* **(Keeps 0.1.2 improvements)** Search helpers (`matrix_sdk.search`), parity parameters in `MatrixClient.search` (e.g. `with_rag`, `rerank`), and documentation quality updates.
+* **Shared utilities**: env toggles, timeouts, runner search depth, safe FS checks in `installer/util.py`.
+
+* **Docs**: updated install/usage/API pages; clearer examples.
+
+> Requires Python **3.11–3.12**.
 
 ---
 

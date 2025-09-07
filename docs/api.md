@@ -1,7 +1,7 @@
 # API Reference
 
-> SDK version: **0.1.2**
-> Scope: Hub catalog client + local installer + lightweight runtime
+> SDK version: **0.1.9**
+> Scope: Hub catalog client • local installer (files, artifacts, env, runner discovery) • lightweight runtime
 
 This SDK provides three pillars:
 
@@ -9,7 +9,13 @@ This SDK provides three pillars:
 2. **LocalInstaller** — materialize a plan locally (files, artifacts, env, `runner.json`).
 3. **runtime** — start/stop/list/tail/doctor local MCP servers (no daemon).
 
-> New in **0.1.2**: `matrix_sdk.search` — thin, defensive wrappers around `/catalog/search` with normalization, retries, and optional mode fallbacks.
+> New in **0.1.9**
+>
+> * The installer has been refactored into a proper subpackage: `matrix_sdk/installer/`.
+> * Backwards-compatible import: **`from matrix_sdk.installer import LocalInstaller` still works**.
+> * More robust runner discovery (URLs, embedded manifests, shallow search, structural inference).
+> * Environment prep parity with the legacy installer (Python venv + pip indices, Node PM autodetect).
+> * New/expanded env toggles (see **Environment variables**).
 
 ---
 
@@ -20,21 +26,32 @@ This SDK provides three pillars:
 
 ```python
 class MatrixClient:
-    def __init__(self, base_url: str, token: str | None = None, *,
-                 timeout: float = 15.0, **kwargs) -> None: ...
+    def __init__(
+        self,
+        base_url: str,
+        token: str | None = None,
+        *,
+        timeout: float = 15.0,
+        **kwargs
+    ) -> None: ...
 
     # Catalog
-    def search(self, q: str, *,
-               type: str | None = "any",
-               limit: int = 10,
-               capabilities: str | None = None,
-               frameworks: str | None = None,
-               providers: str | None = None,
-               mode: str | None = None,
-               include_pending: bool = False,
-               with_snippets: bool = False,
-               with_rag: bool = False,
-               rerank: str | None = "none") -> dict: ...
+    def search(
+        self,
+        q: str,
+        *,
+        type: str | None = "any",
+        limit: int = 10,
+        capabilities: str | None = None,
+        frameworks: str | None = None,
+        providers: str | None = None,
+        mode: str | None = None,
+        include_pending: bool = False,
+        with_snippets: bool = False,
+        with_rag: bool = False,
+        rerank: str | None = "none",
+    ) -> dict: ...
+
     def entity(self, id: str) -> dict: ...
     def install(self, id: str, *, target: str, **kwargs) -> dict: ...
 
@@ -71,7 +88,7 @@ res = handle_install(url, client, target="/abs/install/dir")
 Rules:
 
 * Only `matrix://install` is supported.
-* `id` is **required**; `alias` matches `^[a-z0-9][a-z0-9._-]{0,63}$`.
+* `id` is **required**; `alias` must match `^[a-z0-9][a-z0-9._-]{0,63}$`.
 
 ---
 
@@ -98,17 +115,98 @@ print(result.build.files_written, result.build.artifacts_fetched)
 print(result.runner)         # contents of runner.json (dict)
 ```
 
+### Public dataclasses (exact fields)
+
+```python
+from dataclasses import dataclass
+from typing import Any, Dict, Optional
+
+@dataclass(frozen=True)
+class BuildReport:
+    files_written: int
+    artifacts_fetched: int
+    runner_path: Optional[str]
+
+@dataclass(frozen=True)
+class EnvReport:
+    python_prepared: bool
+    node_prepared: bool
+    notes: Optional[str] = None
+
+@dataclass(frozen=True)
+class BuildResult:
+    id: str
+    target: str
+    plan: Dict[str, Any]
+    build: BuildReport
+    env: EnvReport
+    runner: Dict[str, Any]
+```
+
 ### Lifecycle
 
-1. **plan(id, target)** → ask Hub for an install plan.
-2. **materialize(outcome, target)** → write declared files, fetch artifacts, ensure/validate `runner.json`.
-3. **prepare\_env(target, runner)** → create `.venv` (Python) and/or run `npm|yarn|pnpm install` (Node).
-4. **build(id, …)** → runs all three steps and returns `BuildResult`.
+1. **`plan(id, target)`** → ask Hub for an install plan
+   *Sends a server-safe target label by default (e.g. `alias/version`). Use `MATRIX_INSTALL_SEND_ABS_TARGET=true` to send the absolute path.*
 
-**Runner inference** (when missing):
+2. **`materialize(outcome, target)`** → write declared files, fetch artifacts, ensure/validate `runner.json`
+   *Scans `plan.files`, `results[].files`, and top-level `files`. Supports `content` (text) and `content_b64` (binary).*
 
-* If `server.py` → `{"type":"python","entry":"server.py","python":{"venv":".venv"}}`
-* If `server.js`/`package.json` → Node with sensible default entry.
+3. **`prepare_env(target, runner)`** → create `.venv` (Python) and/or run `pnpm|yarn|npm install` (Node)
+   *Python: upgrades pip/setuptools/wheel; respects pip index envs; installs from `runner.python.requirements`, `requirements.txt`, or local project (`pyproject.toml` / `setup.py`) with optional editable mode. Node: auto-detects package manager from lockfiles unless overridden.*
+
+4. **`build(id, …)`** → runs all three steps and returns `BuildResult`.
+
+### Methods (signatures & behavior)
+
+```python
+class LocalInstaller:
+    def __init__(self, client: MatrixClient, *, fs_root: str | Path | None = None): ...
+
+    def plan(self, id: str, target: str | os.PathLike[str]) -> dict: ...
+    # Sends server-safe label unless MATRIX_INSTALL_SEND_ABS_TARGET=true
+
+    def materialize(self, outcome: dict, target: str | os.PathLike[str]) -> BuildReport: ...
+    # Writes files, fetches artifacts, and writes runner.json via discovery chain
+
+    def prepare_env(
+        self,
+        target: str | os.PathLike[str],
+        runner: dict,
+        *,
+        timeout: int = 900
+    ) -> EnvReport: ...
+    # Python venv + pip install and/or Node install
+
+    def build(
+        self,
+        id: str,
+        *,
+        target: str | os.PathLike[str] | None = None,
+        alias: str | None = None,
+        timeout: int = 900
+    ) -> BuildResult: ...
+
+    def _load_runner_from_report(self, report: BuildReport, target_path: Path) -> dict: ...
+    # Prefers report.runner_path, falls back to target/runner.json
+```
+
+### Runner discovery (strategy order)
+
+The installer uses a deterministic chain and stops at the first valid result:
+
+1. `plan.runner_b64` → decode → validate → write
+2. `plan.runner_url` (relative resolved against provenance) → fetch JSON → validate → write
+3. `plan.runner` (object) → validate → write
+4. Embedded manifest (v2): `manifest.runner` → validate → write
+5. Embedded manifest (v1): extract server URL → synthesize **connector** runner (`/sse`) → write
+6. Local file: `runner_file` or `runner.json`
+7. Shallow BFS for `runner.json` (depth = `MATRIX_SDK_RUNNER_SEARCH_DEPTH`, default **2**)
+8. Manifest URL (`plan.manifest_url` or `provenance.source_url`), when `MATRIX_SDK_ALLOW_MANIFEST_FETCH=true`: fetch → parse → synthesize connector → write
+9. Structural inference: infer minimal `python`/`node` runner from files (e.g., `server.py`, `package.json`) → write
+10. Last-ditch: if *any* MCP/SSE URL hint is present, synthesize a minimal connector
+
+> A valid **process** runner must include `"entry"` and `"type": "python"|"node"`.
+> A valid **connector** runner must include `"type": "connector"` and `"url"`.
 
 ---
 
@@ -121,7 +219,7 @@ print(result.runner)         # contents of runner.json (dict)
 ```python
 from matrix_sdk import runtime
 
-lock = runtime.start("/path/to/install", alias="hello-sse")   # reads runner.json
+lock = runtime.start("/path/to/install", alias="hello-sse")  # reads runner.json
 # uses venv python for python runners; finds a free port if needed
 
 runtime.status()              # -> list[LockInfo]
@@ -209,40 +307,39 @@ Models mirror Hub responses; unknown fields are allowed.
 
 ## Environment variables
 
-* `MATRIX_SDK_DEBUG=1` — verbose logs for installer/runtime/archivefetch/search.
-* `MATRIX_HOME` — base dir for `~/.matrix` (state/logs).
-* `MATRIX_GIT_ALLOWED_HOSTS` — CSV allow-list for git fetch (defaults to common hosts if not provided via API).
-* `MATRIX_GIT_ALLOW_INSECURE=1` — allow `http://` git (discouraged).
-* `MATRIX_SDK_DEBUG_GIT=1` — extra git logs.
+General
 
----
+| Variable                         | Meaning                                                                           | Default   |
+| -------------------------------- | --------------------------------------------------------------------------------- | --------- |
+| `MATRIX_SDK_DEBUG`               | Enables verbose DEBUG logging for installer/runtime/archivefetch.                 | off       |
+| `MATRIX_HOME`                    | Base dir for `~/.matrix` (state/logs).                                            | user home |
+| `MATRIX_INSTALL_SEND_ABS_TARGET` | Send absolute install path to Hub during `plan()` (instead of server-safe label). | off       |
 
-## End-to-end example
+Installer — runner discovery
 
-```python
-from matrix_sdk.client import MatrixClient
-from matrix_sdk.installer import LocalInstaller
-from matrix_sdk import runtime
+| Variable                          | Meaning                                                             | Default     |
+| --------------------------------- | ------------------------------------------------------------------- | ----------- |
+| `MATRIX_SDK_RUNNER_SEARCH_DEPTH`  | Depth for shallow `runner.json` search.                             | `2`         |
+| `MATRIX_SDK_ALLOW_MANIFEST_FETCH` | Permit fetching a remote manifest to synthesize a connector runner. | `1`         |
+| `MATRIX_SDK_MANIFEST_DOMAINS`     | CSV allow-list of domains allowed for remote manifest fetches.      | (allow all) |
+| `MATRIX_SDK_ENABLE_CONNECTOR`     | Allow synthesizing connector runners from URL hints.                | `1`         |
+| `MATRIX_SDK_HTTP_TIMEOUT`         | Network timeout (seconds) for installer fetches.                    | `15`        |
 
-# 1. Initialize the client and installer
-client = MatrixClient(base_url="https://api.matrixhub.io")
-installer = LocalInstaller(client)
+Installer — Python deps
 
-# 2. Build the project locally
-result = installer.build("mcp_server:hello-sse-server@0.1.0", alias="my-server")
-print(f"✅ Project installed to: {result.target}")
+| Variable                         | Meaning                                                 | Default     |
+| -------------------------------- | ------------------------------------------------------- | ----------- |
+| `MATRIX_SDK_PIP_INDEX_URL`       | Primary pip index URL.                                  | pip default |
+| `MATRIX_SDK_PIP_EXTRA_INDEX_URL` | Extra pip index URL.                                    | none        |
+| `MATRIX_SDK_PIP_EDITABLE`        | Install local project as editable (`pip install -e .`). | `1`         |
 
-# 3. Start the server using the runtime module
-server = runtime.start(result.target, alias="my-server")
-print(f"🚀 Server started with PID {server.pid} on port {server.port}")
+Git fetcher
 
-# 4. Check status and stop the server
-print(f"ℹ️ Current status: {runtime.status()}")
-runtime.stop("my-server")
-print("🛑 Server stopped.")
-```
-
-![](assets/2025-08-16-12-47-54.png)
+| Variable                    | Meaning                             | Default      |
+| --------------------------- | ----------------------------------- | ------------ |
+| `MATRIX_GIT_ALLOWED_HOSTS`  | CSV allow-list for git clone hosts. | common hosts |
+| `MATRIX_GIT_ALLOW_INSECURE` | Allow `http://` git (discouraged).  | off          |
+| `MATRIX_SDK_DEBUG_GIT`      | Extra git logs.                     | off          |
 
 ---
 
@@ -314,7 +411,7 @@ class SearchOptions:
     as_model: bool = False                              # return pydantic SearchResponse
 ```
 
-**Defaults**
+Defaults:
 
 * If `fallback_order` is not provided, the helper picks a sensible chain based on the initial `mode`.
 * `max_attempts` applies to each HTTP attempt (initial + each fallback).
@@ -334,4 +431,44 @@ def search_try_modes(
 
 ---
 
-**Removed in 0.1.2**: *none* (no public APIs were deprecated or removed since 0.1.1; this release **adds** the `matrix_sdk.search` helper and extends `MatrixClient.search` to support `with_rag` and `rerank` parameters).\_
+## End-to-end example
+
+```python
+from matrix_sdk.client import MatrixClient
+from matrix_sdk.installer import LocalInstaller
+from matrix_sdk import runtime
+
+# 1. Initialize the client and installer
+client = MatrixClient(base_url="https://api.matrixhub.io")
+installer = LocalInstaller(client)
+
+# 2. Build the project locally
+result = installer.build("mcp_server:hello-sse-server@0.1.0", alias="my-server")
+print(f"✅ Project installed to: {result.target}")
+
+# 3. Start the server using the runtime module
+server = runtime.start(result.target, alias="my-server")
+print(f"🚀 Server started with PID {server.pid} on port {server.port}")
+
+# 4. Check status and stop the server
+print(f"ℹ️ Current status: {runtime.status()}")
+runtime.stop("my-server")
+print("🛑 Server stopped.")
+```
+
+![](assets/2025-08-16-12-47-54.png)
+
+---
+
+## Compatibility notes (0.1.9)
+
+* The legacy `matrix_sdk/installer.py` module has been split into the **`matrix_sdk/installer/`** package.
+* Import **compatibility is preserved**: `from matrix_sdk.installer import LocalInstaller` (and the dataclasses) still works.
+* A few helpers are also re-exported for downstream compatibility:
+  `_is_valid_runner_schema`, `_ensure_sse_url`, `_url_from_manifest`, `_extract_mcp_sse_url`, `_coerce_runner_to_legacy_process`.
+
+---
+
+## Requirements
+
+* Python **3.11 – 3.12** (per `pyproject.toml`).

@@ -1,10 +1,12 @@
-# Usage (v0.1.2)
+# Usage (v0.1.9)
 
-This guide covers common tasks using `MatrixClient` and (optionally) the bulk registrar for Gateways.
+Quick, copy-pasteable examples for searching the Hub, installing locally, and (optionally) running a server.
+
+> Requires **Python 3.11+**.
 
 ---
 
-## Top-5 Search
+## 1) Quick search
 
 ```python
 from matrix_sdk.client import MatrixClient
@@ -13,140 +15,133 @@ hub = MatrixClient(base_url="https://api.matrixhub.io")
 
 res = hub.search(
     q="summarize pdfs",
-    type="any",            # search across all entity types (omit or use "any")
-    limit=5,               # Top-5 by default
-    with_snippets=True,    # short summary snippets when the server supports them
-    with_rag=False,        # include fit_reason fragments if True and supported
-    mode="hybrid",         # "keyword" | "semantic" | "hybrid"
-    include_pending=False, # show unregistered items if True (useful in dev)
-    rerank="none",         # "none" | "llm"
+    type="any",          # omit or use "any" to search across types
+    mode="hybrid",       # "keyword" | "semantic" | "hybrid"
+    limit=5,
+    with_snippets=True,  # short snippets when supported
+    with_rag=False,      # add fit_reason when supported
+    rerank="none",       # "none" | "llm"
 )
 
 for item in res.get("items", []):
-    print(
-        item.get("id"),
-        item.get("name"),
-        item.get("manifest_url"),  # absolute link to the manifest (if provided)
-        item.get("install_url"),   # convenience link to /catalog/install (if provided)
-    )
+    print(item.get("id"), item.get("name"))
 ```
 
-**Notes**
-
-* Omit `type` or use `type="any"` to search across agents, tools, and MCP servers.
-* `include_pending=True` shows items not yet registered with Gateway (useful in dev).
+**Tip:** prefer the high-level helper below for tiny retries and optional fallbacks.
 
 ---
 
-## Show Entity Details
+## 2) Install & build locally
 
 ```python
 from matrix_sdk.client import MatrixClient
+from matrix_sdk.installer import LocalInstaller
 
 hub = MatrixClient("https://api.matrixhub.io")
-detail = hub.entity("tool:hello@0.1.0")
-print(detail.get("name"), "-", detail.get("summary"))
-```
+installer = LocalInstaller(hub)
 
----
-
-## Install an Item
-
-```python
-from matrix_sdk.client import MatrixClient
-
-hub = MatrixClient("https://api.matrixhub.io")
-hub.install(
-    id="tool:hello@0.1.0",
-    target="./.matrix/runners/demo",
-    # alias="hello",            # optional; hub may ignore (CLI uses locally)
-    # options={"force": True},  # optional pass-through
+result = installer.build(
+    "mcp_server:hello-sse-server@0.1.0",
+    alias="hello-sse",   # optional; influences default target label
+    # target=None        # omit to use policy default
 )
+
+print("Installed to:", result.target)
+print("Python env:", result.env.python_prepared, "Node env:", result.env.node_prepared)
+print("Runner type:", result.runner.get("type"))
 ```
 
-The Hub returns an install plan + results (artifacts, adapters written, lockfile path). Some hubs may return a simple `{ "ok": true }`.
+The build step: 1) requests a plan, 2) writes files/artifacts, 3) ensures `runner.json`, 4) prepares envs.
 
 ---
 
-## Manage Catalog Remotes
+## 3) Run locally (no daemon)
+
+```python
+from matrix_sdk import runtime
+
+lock = runtime.start("/abs/path/to/install", alias="hello-sse")  # reads runner.json
+print(lock.pid, lock.port)
+
+print(runtime.status())
+runtime.stop("hello-sse")
+```
+
+**Connector / attach mode:** if `runner.json` contains `{"type":"connector","url":"http://127.0.0.1:6288/sse"}`, `runtime.start(...)` **does not** spawn a process; it records the URL in the lock (`pid=0`). Use your MCP client to talk to that endpoint directly.
+
+---
+
+## 4) Advanced search helper
+
+```python
+from matrix_sdk.client import MatrixClient
+from matrix_sdk.search import search, SearchOptions, search_try_modes
+
+hub = MatrixClient("https://api.matrixhub.io")
+
+# Hybrid with safe fallbacks; returns dict by default
+res = search(
+    hub, "chat with PDFs",
+    type="any",
+    limit=5,
+    with_snippets=True,
+)
+
+# Typed result (Pydantic model) with tiny retries
+res_typed = search(
+    hub, "vector stores",
+    type="tool",
+    options=SearchOptions(as_model=True, max_attempts=3)
+)
+
+# Try modes explicitly (no fallbacks)
+for mode, payload in search_try_modes(hub, "hello", modes=("keyword","semantic","hybrid")):
+    print(mode, payload.get("total"))
+```
+
+---
+
+## 5) Manage catalog remotes
 
 ```python
 from matrix_sdk.client import MatrixClient
 
 hub = MatrixClient("https://api.matrixhub.io")
+print(hub.list_remotes())
 
-print("Remotes:", hub.list_remotes())
 hub.add_remote("https://example.org/catalog/index.json", name="example")
 hub.trigger_ingest("example")
 ```
 
 ---
 
-## Bulk Registration (Gateway, optional)
-
-If you also manage an MCP Gateway, you can discover servers in a ZIP/dir/Git repo and register them via the Admin API.
-
-### Python (single source)
+## 6) Bulk registration (Gateway, optional)
 
 ```python
-import os, asyncio
+import asyncio, os
 from matrix_sdk.bulk.bulk_registrar import BulkRegistrar
 
-# Choose ONE source; priority is ZIP > DIR > GIT
-if os.getenv("ZIP_PATH"):
-    sources = [{"kind": "zip", "path": os.getenv("ZIP_PATH"), "probe": True}]
-elif os.getenv("DIR_PATH"):
-    sources = [{"kind": "dir", "path": os.getenv("DIR_PATH"), "probe": True}]
-else:
-    sources = [{
-        "kind": "git",
-        "url": os.getenv("GIT_URL", "https://github.com/ruslanmv/hello-mcp"),
-        "ref": os.getenv("GIT_REF", "main"),
-        "probe": True,  # try ${endpoint}/capabilities and merge
-    }]
+sources = [{
+    "kind": "git",
+    "url": "https://github.com/ruslanmv/hello-mcp",
+    "ref": "main",
+    "probe": True,  # fetch and merge capabilities when possible
+}]
 
 registrar = BulkRegistrar(
     gateway_url=os.getenv("GATEWAY_URL", "http://127.0.0.1:4444"),
     token=os.getenv("ADMIN_TOKEN"),
-    concurrency=10,  # adjust as needed
+    concurrency=25,
     probe=True,
 )
 
 results = asyncio.run(registrar.register_servers(sources))
-print(results)  # e.g., [{"message":"Server created successfully!","success":true}]
+print(results)
 ```
-
-### CLI-style (module)
-
-```bash
-# Git source
-python -m matrix_sdk.bulk.cli \
-  --git https://github.com/ruslanmv/hello-mcp --ref main \
-  --gateway-url http://127.0.0.1:4444 \
-  --token "$ADMIN_TOKEN"
-
-# ZIP source (preferred to avoid git/network)
-python -m matrix_sdk.bulk.cli \
-  --zip ./hello-mcp-main.zip \
-  --gateway-url http://127.0.0.1:4444 \
-  --token "$ADMIN_TOKEN"
-
-# Directory source (already cloned)
-python -m matrix_sdk.bulk.cli \
-  --dir ./repo \
-  --gateway-url http://127.0.0.1:4444 \
-  --token "$ADMIN_TOKEN"
-```
-
-**How it works**
-
-* **Discovery (matrix-first):** looks for `matrix/index.json` or `matrix/*.manifest.json`; else falls back to `[tool.mcp_server]` in `pyproject.toml`.
-* **Gateway compatibility:** posts **JSON** first; if the gateway expects form data on `/admin/servers`, it **auto-falls back** to URL-encoded form and **sanitizes `name`** to meet gateway rules.
-* **Resilience:** stable idempotency key, concurrency, and exponential backoff with jitter.
 
 ---
 
-## Error handling
+## 7) Error handling
 
 ```python
 from matrix_sdk.client import MatrixClient, MatrixError
@@ -156,70 +151,14 @@ hub = MatrixClient("https://api.matrixhub.io")
 try:
     hub.install(id="tool:does-not-exist@0.0.0", target="./dest")
 except MatrixError as e:
-    print("Install failed:", getattr(e, "status", None) or getattr(e, "status_code", None), e)
+    print("Install failed:", getattr(e, "status", None), e)
 ```
 
 ---
 
-## Advanced search
+## Environment variables (quick reference)
 
-High-level helpers around `GET /catalog/search` with normalization, tiny retries, and optional mode fallbacks.
-
-```python
-from matrix_sdk.client import MatrixClient
-from matrix_sdk.search import search, SearchOptions, search_try_modes
-
-hub = MatrixClient("https://api.matrixhub.io")
-
-# 1) Hybrid (default) with safe fallbacks; returns dict by default
-res = search(
-    hub, "summarize pdfs",
-    type="any",
-    limit=5,
-    with_snippets=True,          # ask server for snippets if supported
-    include_pending=True         # show not-yet-registered entities (useful in dev)
-)
-for it in res.get("items", []):
-    print(it.get("id"), it.get("name"))
-
-# 2) Semantic-first, typed result (Pydantic SearchResponse), with small retries
-res_typed = search(
-    hub, "chat with PDFs",
-    type="agent",
-    mode="semantic",
-    options=SearchOptions(as_model=True, max_attempts=3)
-)
-print(res_typed.total, [item.id for item in res_typed.items])
-
-# 3) Filters can be CSV or lists/sets (auto-normalized to CSV)
-res = search(
-    hub, "assistant",
-    capabilities=["rag", "sql"],     # list → CSV
-    frameworks="langchain,litellm",  # CSV is fine too
-    providers={"self", "acme-inc"},  # set → CSV
-    limit=10
-)
-
-# 4) Try specific modes without fallbacks (diagnostics/benchmarks)
-for mode, payload in search_try_modes(
-    hub, "hello", modes=("keyword", "semantic", "hybrid"), type="any", limit=5
-):
-    items = payload.get("items", [])
-    print(mode, len(items))
-```
-
-**Notes**
-
-* Filters (`capabilities/frameworks/providers`) accept CSV or iterables; they’re normalized to CSV.
-* `limit` is clamped to the server’s bounds (1..100).
-* Mode fallback sequence is sensible by default (e.g., semantic → hybrid → keyword) and can be overridden via `SearchOptions(fallback_order=...)`.
-* Returns a `dict` by default. Use `SearchOptions(as_model=True)` for a typed `SearchResponse`.
-
----
-
-### What changed vs prior docs
-
-* Updated to **v0.1.2**.
-* Search examples now include `with_rag` and `rerank`.
-* Removed deprecated “Manifest helpers” section and client route-override notes.
-* Bulk registrar remains supported.
+* `MATRIX_SDK_DEBUG=1` — verbose logs (installer/runtime/search/etc.).
+* `MATRIX_HOME` — base dir for state/logs (default: `~/.matrix`).
+* `MATRIX_SDK_ENABLE_CONNECTOR=1` — allow connector runner synthesis (default **on**).
+* `MATRIX_SDK_HTTP_TIMEOUT` — network timeout (seconds; default **15**).
