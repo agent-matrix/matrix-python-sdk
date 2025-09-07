@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""Python/Node environment preparation (OS‑sensitive).
+"""Python/Node environment preparation (OS-sensitive).
 
 Public API (used by core.py):
     - prepare_python_env(target_path: Path, runner: dict, timeout: int) -> bool
@@ -15,7 +15,7 @@ Internal helpers:
     - _run (exec wrapper)
 
 Design:
-    * Cross‑platform and robust. Windows symlink fallback preserved.
+    * Cross-platform and robust. Windows symlink fallback preserved.
     * No schema logic; only environment work.
     * Lazy import of optional modules (python_builder).
     * Small, actionable logs. INFO for decisions; DEBUG for details.

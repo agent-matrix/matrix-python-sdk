@@ -5,7 +5,7 @@ Design goals
 ------------
 - Tiny, dependency-free, and stable.
 - No imports from other installer modules (avoid cycles).
-- Cross‑platform safe (Windows/macOS/Linux).
+- Cross-platform safe (Windows/macOS/Linux).
 - Structured, minimal logging; DEBUG when MATRIX_SDK_DEBUG is set.
 
 Public API
@@ -19,13 +19,14 @@ Public API
 - _as_dict(obj) -> dict
 - _plan_target_for_server(id_str, target) -> str
 - _ensure_local_writable(path: Path) -> None
+- _find_runner_file_shallow(root: Path, name: str, max_depth: int) -> Optional[Path]
 """
 from __future__ import annotations
 
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 __all__ = [
     "logger",
@@ -37,6 +38,7 @@ __all__ = [
     "_as_dict",
     "_plan_target_for_server",
     "_ensure_local_writable",
+    "_find_runner_file_shallow",
 ]
 
 
@@ -129,11 +131,11 @@ def _as_dict(obj: Any) -> Dict[str, Any]:
 
 
 def _plan_target_for_server(id_str: str, target: str | os.PathLike[str]) -> str:
-    """Convert a local absolute path into a server‑safe label.
+    """Convert a local absolute path into a server-safe label.
 
     Mapping:
         <...>/<alias>/<version>  ->  "alias/version"
-    Both components are sanitized for cross‑platform use.
+    Both components are sanitized for cross-platform use.
     """
     p = Path(str(target))
     alias = (p.parent.name or "runner").strip()
@@ -165,3 +167,53 @@ def _ensure_local_writable(path: Path) -> None:
         except Exception:
             # Non-fatal: leave the probe if remove fails; surface no extra noise
             pass
+
+
+def _find_runner_file_shallow(root: Path, name: str, max_depth: int) -> Optional[Path]:
+    """Breadth-first search for *name* up to *max_depth*, skipping noisy dirs.
+
+    Skipped directories (case-sensitive):
+        node_modules, .venv, venv, .git, __pycache__
+
+    Returns:
+        The first matching Path found, or None if not found within depth.
+    """
+    if max_depth <= 0:
+        return None
+
+    from collections import deque
+
+    skip_dirs = {"node_modules", ".venv", "venv", ".git", "__pycache__"}
+    dq: "deque[tuple[Path, int]]" = deque([(root, 0)])
+    seen: set[Path] = {root}
+
+    logger.debug(
+        "search: shallow search for '%s' from '%s' (depth=%d)",
+        name,
+        _short(root),
+        max_depth,
+    )
+
+    while dq:
+        cur, depth = dq.popleft()
+        candidate = cur / name
+        if candidate.is_file():
+            logger.debug("search: found '%s'", _short(candidate))
+            return candidate
+
+        if depth < max_depth:
+            try:
+                for child in cur.iterdir():
+                    if (
+                        child.is_dir()
+                        and child not in seen
+                        and child.name not in skip_dirs
+                    ):
+                        seen.add(child)
+                        dq.append((child, depth + 1))
+            except OSError as e:
+                logger.debug("search: could not list '%s': %s", _short(cur), e)
+                continue
+
+    logger.debug("search: finished for '%s'; no file found.", name)
+    return None

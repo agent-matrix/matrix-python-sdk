@@ -8,9 +8,9 @@ This module exposes the public orchestration surface for local installs:
 
 It delegates all heavy lifting to small, testable submodules:
 - ``installer.files``               → file writes & artifact fetching
-- ``installer.runner_discovery``   → strategy pipeline to produce ``runner.json``
-- ``installer.envs``                 → Python/Node environment preparation
-- ``installer.util``                 → logging & small helpers
+- ``installer.runner_discovery``    → strategy pipeline to produce ``runner.json``
+- ``installer.envs``                → Python/Node environment preparation
+- ``installer.util``                → logging & small helpers
 
 Design goals
 ------------
@@ -55,7 +55,11 @@ except Exception:  # pragma: no cover - transitional fallback
             logging.Formatter("[matrix-sdk][installer] %(levelname)s: %(message)s")
         )
         _LOGGER.addHandler(handler)
-    _LOGGER.setLevel(logging.INFO)
+    # Honor MATRIX_SDK_DEBUG for fallback logger as well
+    dbg = (os.getenv("MATRIX_SDK_DEBUG") or "").strip().lower()
+    _LOGGER.setLevel(
+        logging.DEBUG if dbg in {"1", "true", "yes", "on"} else logging.INFO
+    )
 
     def _short(path: Path | str, maxlen: int = 120) -> str:
         s = str(path)
@@ -96,7 +100,7 @@ logger = _LOGGER
 
 
 # ---------------------------------------------------------------------------
-# Public dataclasses
+# Public dataclasses  (must match legacy API exactly)
 # ---------------------------------------------------------------------------
 @dataclass(frozen=True)
 class BuildReport:
@@ -183,14 +187,22 @@ class LocalInstaller:
         from .runner_discovery import materialize_runner as _materialize_runner
 
         files_written = _materialize_files(outcome, target_path)
-        # 		plan_node = outcome.get("plan", outcome)
         plan_node = outcome.get("plan") or outcome
-
         artifacts_fetched = _materialize_artifacts(plan_node, target_path)
 
-        # FIX: Orchestration → discovery call signature
-        # Was: _materialize_runner(self, outcome, target_path)
-        runner_path = _materialize_runner(outcome, target_path)
+        # Orchestration → discovery; support both new/old signatures for safety.
+        try:
+            runner_path = _materialize_runner(outcome, target_path)
+        except TypeError:
+            try:
+                runner_path = _materialize_runner(self, outcome, target_path)
+            except TypeError:
+                try:
+                    runner_path = _materialize_runner(
+                        self, plan_node, target_path, outcome
+                    )
+                except Exception:
+                    runner_path = None
 
         report = BuildReport(
             files_written=files_written,
@@ -213,7 +225,7 @@ class LocalInstaller:
         *,
         timeout: int = 900,
     ) -> EnvReport:
-        """Prepare Python and/or Node environments according to ``runner``."""
+        """Create Python venv + pip install OR run Node package-manager install."""
         target_path = self._abs(target)
         runner_type = (runner.get("type") or "").lower()
         logger.info(
@@ -266,7 +278,7 @@ class LocalInstaller:
         alias: Optional[str] = None,
         timeout: int = 900,
     ) -> BuildResult:
-        """Perform plan → materialize → load runner → prepare env workflow."""
+        """Full orchestration: plan → materialize → load runner → prepare_env."""
         logger.info("build: starting full build for id='%s', alias='%s'", id, alias)
         tgt = self._abs(target or default_install_target(id, alias=alias))
         logger.info("build: target resolved → %s", _short(tgt))
@@ -321,7 +333,7 @@ class LocalInstaller:
     def _load_runner_from_report(
         self, report: BuildReport, target_path: Path
     ) -> Dict[str, Any]:
-        """Load the runner.json file after materialization."""
+        """Prefer report.runner_path if set; fallback to target/runner.json."""
         logger.debug("build: loading runner.json from build report.")
         runner_path = (
             Path(report.runner_path)

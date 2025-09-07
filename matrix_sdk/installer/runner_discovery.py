@@ -96,6 +96,8 @@ _SKIP_DIRS = {"node_modules", ".venv", "venv", ".git", "__pycache__"}
 # =============================================================================
 # Public entrypoint
 # =============================================================================
+
+
 def materialize_runner(outcome: Dict[str, Any], target_path: Path) -> Optional[str]:
     """Find, infer, or synthesize a ``runner.json`` for *outcome* into *target_path*.
 
@@ -138,6 +140,8 @@ def materialize_runner(outcome: Dict[str, Any], target_path: Path) -> Optional[s
 # =============================================================================
 # Strategy implementations (private)
 # =============================================================================
+
+
 def _try_fetch_runner_from_b64(
     plan_node: Dict[str, Any], target: Path, *_: Any
 ) -> Optional[str]:
@@ -485,6 +489,8 @@ def _write_min_connector_if_any_url_hint(
 # =============================================================================
 # Local helpers (private)
 # =============================================================================
+
+
 def _connector_enabled() -> bool:
     val = (os.getenv("MATRIX_SDK_ENABLE_CONNECTOR") or "1").strip().lower()
     return val in {"1", "true", "yes", "on"}

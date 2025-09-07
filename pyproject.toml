@@ -8,7 +8,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "matrix-python-sdk"
-version = "0.1.8"
+version = "0.1.9"
 description = "Python SDK for Matrix Hub — catalog search, entity detail, install, and remote management for agents, tools, and MCP servers."
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
@@ -43,9 +43,11 @@ Issues = "https://github.com/agent-matrix/matrix-python-sdk/issues"
 Repository = "https://github.com/agent-matrix/matrix-python-sdk"
 Documentation = "https://agent-matrix.github.io/matrix-python-sdk/"
 
-[tool.setuptools]
-packages = ["matrix_sdk"]
-package-dir = { "" = "." }
+[tool.setuptools.packages.find]
+# This replaces the old `packages` key and tells setuptools to automatically
+# find all packages and subpackages (like `matrix_sdk.installer`).
+where = ["."]
+include = ["matrix_sdk*"]
 
 [tool.ruff]
 line-length = 100
