@@ -108,3 +108,4 @@ Thumbs.db
 * copy.*
 * copy *.*
 /wheelhouse
+/examples/backup
