@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Optional
 
 import httpx
+from .tls import VERIFY as _VERIFY
 
 __all__ = [
     "ArchiveFetchError",
@@ -227,7 +228,7 @@ def fetch_http_artifact(
     # Step 1: Download the artifact
     lg.info("http: GET %s", url)
     try:
-        with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+        with httpx.Client(timeout=timeout, follow_redirects=True,verify=_VERIFY, trust_env=True) as client:
             resp = client.get(url)
             resp.raise_for_status()
             data = resp.content

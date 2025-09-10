@@ -42,6 +42,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import httpx
 
 from matrix_sdk import MatrixClient, MatrixError
+from .tls import VERIFY as _VERIFY
 
 
 # ---------------------------- small helpers ----------------------------------
@@ -129,7 +130,7 @@ def _extract_reason(detail: str) -> Optional[str]:
 
 
 def _load_manifest(url: str, *, timeout: float = 10.0) -> Dict[str, Any]:
-    with httpx.Client(timeout=timeout, follow_redirects=True) as c:
+    with httpx.Client(timeout=timeout, follow_redirects=True,verify=_VERIFY, trust_env=True) as c:
         r = c.get(url, headers={"Accept": "application/json,*/*"})
     ctype = (r.headers.get("content-type") or "").lower()
     text = r.text

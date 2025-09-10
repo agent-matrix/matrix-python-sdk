@@ -38,6 +38,8 @@ import httpx
 from .ssl_compat import configure_ssl_trust  # production-safe TLS hardening
 
 # <<<
+from .tls import VERIFY as _VERIFY
+
 
 try:
     # Optional typed models (recommended)
@@ -460,7 +462,10 @@ class MatrixClient:
             raise MatrixError(404, "Manifest URL not found")
         try:
             with httpx.Client(
-                timeout=self.timeout, headers={"Accept": "application/json"}
+                timeout=self.timeout,
+                headers={"Accept": "application/json"},
+                verify=_VERIFY,  # ensure CA bundle
+                trust_env=True,  # honor HTTPS_PROXY / REQUESTS_CA_BUNDLE
             ) as client:
                 resp = client.get(url)
         except httpx.RequestError as e:
@@ -495,7 +500,12 @@ class MatrixClient:
             hdrs.update(headers)
 
         try:
-            with httpx.Client(timeout=self.timeout, headers=hdrs) as client:
+            with httpx.Client(
+                timeout=self.timeout,
+                headers=hdrs,
+                verify=_VERIFY,  # ensure CA bundle for all requests
+                trust_env=True,  # pick up proxies / REQUESTS_CA_BUNDLE
+            ) as client:
                 resp = client.request(method, url, params=params, json=json_body)
         except httpx.RequestError as e:
             raise MatrixError(0, str(e)) from e

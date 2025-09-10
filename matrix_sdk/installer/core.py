@@ -35,16 +35,14 @@ Environment flags (optional):
 from __future__ import annotations
 
 import json
-import logging
 import os
-import sys
 import ssl
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
-from urllib.error import URLError, HTTPError
 
 from ..client import MatrixClient
 from ..manifest import ManifestResolutionError
@@ -72,7 +70,9 @@ except Exception:  # pragma: no cover - transitional fallback
         )
         _LOGGER.addHandler(handler)
     dbg = (os.getenv("MATRIX_SDK_DEBUG") or "").strip().lower()
-    _LOGGER.setLevel(_logging.DEBUG if dbg in {"1", "true", "yes", "on"} else _logging.INFO)
+    _LOGGER.setLevel(
+        _logging.DEBUG if dbg in {"1", "true", "yes", "on"} else _logging.INFO
+    )
 
     def _short(path: Path | str, maxlen: int = 120) -> str:
         s = str(path)
@@ -111,6 +111,7 @@ except Exception:  # pragma: no cover - transitional fallback
 
 logger = _LOGGER
 
+
 # ---------------------------------------------------------------------------
 # Utility / instrumentation helpers
 # ---------------------------------------------------------------------------
@@ -131,7 +132,9 @@ def _json_pretty(obj: Any) -> str:
 
 def _json_preview(obj: Any, *, limit: int = 4000) -> str:
     s = _json_pretty(obj)
-    return s if len(s) <= limit else f"{s[:limit]}\n… (truncated {len(s) - limit} chars)"
+    return (
+        s if len(s) <= limit else f"{s[:limit]}\n… (truncated {len(s) - limit} chars)"
+    )
 
 
 def _dump_json(path: Path, data: Any) -> None:
@@ -143,67 +146,90 @@ def _dump_json(path: Path, data: Any) -> None:
         logger.debug("debug: failed to write %s (%s)", _short(path), e)
 
 
-def _scan_manifest_and_sources(d: Dict[str, Any]) -> Dict[str, Any]:
-    """Summarize where manifests and repos are referenced (incl. lockfile fallback)."""
-    if not isinstance(d, dict):
-        return {}
-    plan = d.get("plan") if isinstance(d.get("plan"), dict) else {}
-    prov_plan = (plan or {}).get("provenance") if isinstance(plan, dict) else {}
-    prov_out = d.get("provenance") if isinstance(d.get("provenance"), dict) else {}
-
-    def g(node: Dict[str, Any], *keys: str) -> Optional[str]:
-        for key in keys:
-            v = node.get(key)
-            if isinstance(v, str) and v.strip():
-                return v.strip()
-        return None
-
-    manifest_url = g(plan, "manifest_url") or g(d, "manifest_url")
-
-    source_url = (
-        g(plan, "source_url")
-        or g(prov_plan or {}, "source_url")
-        or g(d, "source_url")
-        or g(prov_out or {}, "source_url")
-    )
-
-    # Also scan lockfile.entities[*].provenance.source_url
-    lockfile = d.get("lockfile") if isinstance(d.get("lockfile"), dict) else {}
-    lf_entities = lockfile.get("entities") if isinstance(lockfile, dict) else []
+def _scan_lockfile_for_sources(lockfile: Any) -> List[str]:
+    """Extract source_urls from lockfile entities."""
     lf_source_urls: List[str] = []
-    if isinstance(lf_entities, list):
-        for ent in lf_entities:
-            if isinstance(ent, dict):
-                prov = ent.get("provenance") if isinstance(ent.get("provenance"), dict) else {}
-                u = (prov.get("source_url") or "").strip() if prov else ""
+    if not isinstance(lockfile, dict):
+        return lf_source_urls
+
+    lf_entities = lockfile.get("entities")
+    if not isinstance(lf_entities, list):
+        return lf_source_urls
+
+    for ent in lf_entities:
+        if isinstance(ent, dict):
+            prov = ent.get("provenance")
+            if isinstance(prov, dict):
+                u = (prov.get("source_url") or "").strip()
                 if u:
                     lf_source_urls.append(u)
+    return lf_source_urls
 
-    # repositories (only top-level plan repos)
+
+def _scan_plan_for_repos(plan: Any) -> List[str]:
+    """Extract repository URLs from a plan dictionary."""
     plan_repo_urls: List[str] = []
-    if isinstance(plan.get("repository"), dict):
-        u = (plan["repository"].get("url") or plan["repository"].get("repo") or "").strip()
+    if not isinstance(plan, dict):
+        return plan_repo_urls
+
+    repo = plan.get("repository")
+    if isinstance(repo, dict):
+        u = (repo.get("url") or repo.get("repo") or "").strip()
         if u:
             plan_repo_urls.append(u)
-    if isinstance(plan.get("repositories"), list):
-        for r in plan["repositories"]:
+
+    repos = plan.get("repositories")
+    if isinstance(repos, list):
+        for r in repos:
             if isinstance(r, dict):
                 u = (r.get("url") or r.get("repo") or "").strip()
                 if u:
                     plan_repo_urls.append(u)
+    return plan_repo_urls
+
+
+def _scan_manifest_and_sources(d: Dict[str, Any]) -> Dict[str, Any]:
+    """Summarize where manifests and repos are referenced (incl. lockfile fallback)."""
+    if not isinstance(d, dict):
+        return {}
+
+    plan = d.get("plan") if isinstance(d.get("plan"), dict) else {}
+    prov_plan = (
+        plan.get("provenance")
+        if isinstance(plan, dict) and isinstance(plan.get("provenance"), dict)
+        else {}
+    )
+    prov_out = d.get("provenance") if isinstance(d.get("provenance"), dict) else {}
+
+    def g(node: Optional[Dict[str, Any]], key: str) -> Optional[str]:
+        if not node:
+            return None
+        v = node.get(key)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+        return None
+
+    manifest_url = g(plan, "manifest_url") or g(d, "manifest_url")
+
+    source_url = None
+    for node in [plan, prov_plan, d, prov_out]:
+        url = g(node, "source_url")
+        if url:
+            source_url = url
+            break
 
     artifacts_len = 0
-    if isinstance(plan, dict) and isinstance(plan.get("artifacts"), list):
+    if isinstance(plan.get("artifacts"), list):
         artifacts_len = len(plan["artifacts"])
 
     return {
         "manifest_url": manifest_url,
         "source_url": source_url,
-        "lockfile_source_urls": lf_source_urls,
-        "plan_repository_urls": plan_repo_urls,
+        "lockfile_source_urls": _scan_lockfile_for_sources(d.get("lockfile")),
+        "plan_repository_urls": _scan_plan_for_repos(plan),
         "plan_artifacts_len": artifacts_len,
         "top_level_keys": sorted(list(d.keys())),
-        "plan_keys": sorted(list((plan or {}).keys())) if isinstance(plan, dict) else [],
+        "plan_keys": sorted(list(plan.keys())) if isinstance(plan, dict) else [],
     }
 
 
@@ -218,7 +244,9 @@ def _first_manifest_url_hint(outcome: Dict[str, Any]) -> Optional[str]:
     return lf[0] if lf else None
 
 
-def _http_get_json(url: str, *, timeout: float, insecure: bool) -> Tuple[int, Optional[Dict[str, Any]], str]:
+def _http_get_json(
+    url: str, *, timeout: float, insecure: bool
+) -> Tuple[int, Optional[Dict[str, Any]], str]:
     """Minimal HTTP GET → JSON using stdlib (no external dependency)."""
     try:
         ctx = None
@@ -266,7 +294,9 @@ def _normalize_sse_url(url: str) -> str:
     return u
 
 
-def _synthesize_connector_from_manifest(manifest: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def _synthesize_connector_from_manifest(
+    manifest: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
     """Return a connector-style runner from manifest['runner'] or mcp_registration.server.url."""
     runner = manifest.get("runner") or {}
     if isinstance(runner, dict) and _is_mcp_sse_runner(runner):
@@ -276,7 +306,7 @@ def _synthesize_connector_from_manifest(manifest: Dict[str, Any]) -> Optional[Di
         return {"type": "connector", **r}
 
     # Fallback: infer from mcp_registration.server.url
-    server = ((manifest.get("mcp_registration") or {}).get("server") or {})
+    server = (manifest.get("mcp_registration") or {}).get("server") or {}
     url = _normalize_sse_url(str(server.get("url") or ""))
     if url:
         return {
@@ -325,7 +355,9 @@ class BuildResult:
 # Orchestration
 # ---------------------------------------------------------------------------
 class LocalInstaller:
-    def __init__(self, client: MatrixClient, *, fs_root: Optional[str | Path] = None) -> None:
+    def __init__(
+        self, client: MatrixClient, *, fs_root: Optional[str | Path] = None
+    ) -> None:
         self.client = client
         self.fs_root = Path(fs_root).expanduser() if fs_root else None
         logger.debug("LocalInstaller created (fs_root=%s)", self.fs_root)
@@ -340,7 +372,9 @@ class LocalInstaller:
             logger.debug("plan: sending absolute target path to server: %s", to_send)
         else:
             to_send = _plan_target_for_server(id, target)
-            logger.debug("plan: sending server-safe target label to server: %s", to_send)
+            logger.debug(
+                "plan: sending server-safe target label to server: %s", to_send
+            )
 
         t0 = time.perf_counter()
         try:
@@ -360,14 +394,19 @@ class LocalInstaller:
 
         diag = _scan_manifest_and_sources(as_dict)
         logger.info(
-            "plan: summary → artifacts=%s repo_urls=%s manifest_url=%s source_url=%s lockfile_sources=%s",
+            (
+                "plan: summary → artifacts=%s repo_urls=%s manifest_url=%s "
+                "source_url=%s lockfile_sources=%s"
+            ),
             diag["plan_artifacts_len"],
             diag["plan_repository_urls"],
             diag["manifest_url"],
             diag["source_url"],
             diag["lockfile_source_urls"],
         )
-        logger.debug("plan: keys → top=%s plan=%s", diag["top_level_keys"], diag["plan_keys"])
+        logger.debug(
+            "plan: keys → top=%s plan=%s", diag["top_level_keys"], diag["plan_keys"]
+        )
 
         if _env_on("MATRIX_SDK_DEBUG_DUMP_OUTCOME"):
             try:
@@ -379,7 +418,9 @@ class LocalInstaller:
 
         return as_dict
 
-    def materialize(self, outcome: Dict[str, Any], target: str | os.PathLike[str]) -> BuildReport:
+    def materialize(
+        self, outcome: Dict[str, Any], target: str | os.PathLike[str]
+    ) -> BuildReport:
         logger.debug("materialize: starting materialization process.")
         target_path = self._abs(target)
         target_path.mkdir(parents=True, exist_ok=True)
@@ -408,9 +449,13 @@ class LocalInstaller:
                 runner_path = _materialize_runner(self, outcome, target_path)
             except TypeError:
                 try:
-                    runner_path = _materialize_runner(self, plan_node, target_path, outcome)
+                    runner_path = _materialize_runner(
+                        self, plan_node, target_path, outcome
+                    )
                 except Exception:
-                    logger.debug("materialize: runner_discovery legacy signatures exhausted.")
+                    logger.debug(
+                        "materialize: runner_discovery legacy signatures exhausted."
+                    )
                     runner_path = None
         except Exception:
             logger.exception("materialize: runner discovery failed unexpectedly.")
@@ -423,9 +468,13 @@ class LocalInstaller:
                 timeout = float(os.getenv("MATRIX_SDK_MANIFEST_TIMEOUT", "8") or "8")
                 insecure = _env_on("MATRIX_SDK_INSECURE_TLS")
                 logger.info("runner(fallback): fetching manifest from hint → %s", hint)
-                code, manifest, body = _http_get_json(hint, timeout=timeout, insecure=insecure)
+                code, manifest, body = _http_get_json(
+                    hint, timeout=timeout, insecure=insecure
+                )
                 ok = (200 <= code < 300) and isinstance(manifest, dict)
-                logger.info("runner(fallback): manifest HTTP %s json_ok=%s", code or "ERR", ok)
+                logger.info(
+                    "runner(fallback): manifest HTTP %s json_ok=%s", code or "ERR", ok
+                )
                 if ok:
                     # Try concrete runner or synthesize from server.url
                     r = _synthesize_connector_from_manifest(manifest)
@@ -434,11 +483,18 @@ class LocalInstaller:
                             rp = Path(target_path) / "runner.json"
                             _write_runner_json(rp, r)
                             runner_path = str(rp)
-                            logger.info("runner(fallback): wrote runner.json → %s", _short(rp))
+                            logger.info(
+                                "runner(fallback): wrote runner.json → %s", _short(rp)
+                            )
                             if _env_on("MATRIX_SDK_DEBUG_DUMP_RUNNER"):
-                                _dump_json(Path(target_path) / ".debug" / "runner.loaded.json", r)
+                                _dump_json(
+                                    Path(target_path) / ".debug" / "runner.loaded.json",
+                                    r,
+                                )
                         except Exception as e:
-                            logger.warning("runner(fallback): failed to write runner.json: %s", e)
+                            logger.warning(
+                                "runner(fallback): failed to write runner.json: %s", e
+                            )
                     else:
                         logger.warning(
                             "runner(fallback): manifest did not contain a usable MCP/SSE runner, "
@@ -451,7 +507,9 @@ class LocalInstaller:
                         (body or "")[:200],
                     )
             else:
-                logger.debug("runner(fallback): no manifest URL hints available in outcome/lockfile.")
+                logger.debug(
+                    "runner(fallback): no manifest URL hints available in outcome/lockfile."
+                )
         # ---------------- End manifest-based fallback
 
         report = BuildReport(
@@ -477,7 +535,11 @@ class LocalInstaller:
     ) -> EnvReport:
         target_path = self._abs(target)
         runner_type = (runner.get("type") or "").lower()
-        logger.info("env: preparing environment (type=%s) in %s", runner_type or "-", _short(target_path))
+        logger.info(
+            "env: preparing environment (type=%s) in %s",
+            runner_type or "-",
+            _short(target_path),
+        )
         logger.debug("env: using runner config: %s", runner)
 
         from .envs import prepare_node_env as _prepare_node_env
@@ -492,7 +554,9 @@ class LocalInstaller:
             py_ok = _prepare_python_env(target_path, runner, timeout)
 
         if runner_type == "node" or runner.get("node"):
-            logger.debug("env: node runner or config detected, preparing node environment.")
+            logger.debug(
+                "env: node runner or config detected, preparing node environment."
+            )
             node_ok, node_notes = _prepare_node_env(target_path, runner, timeout)
             if node_notes:
                 notes_list.append(node_notes)
@@ -575,19 +639,34 @@ class LocalInstaller:
         logger.debug("_abs: resolved path. %s -> %s", path, abs_path)
         return abs_path
 
-    def _load_runner_from_report(self, report: BuildReport, target_path: Path) -> Dict[str, Any]:
+    def _load_runner_from_report(
+        self, report: BuildReport, target_path: Path
+    ) -> Dict[str, Any]:
         logger.debug("build: loading runner.json from build report.")
-        runner_path = Path(report.runner_path) if report.runner_path else Path(target_path) / "runner.json"
+        runner_path = (
+            Path(report.runner_path)
+            if report.runner_path
+            else Path(target_path) / "runner.json"
+        )
         logger.debug("build: effective runner path is '%s'", _short(runner_path))
         if runner_path.is_file():
             try:
                 runner_data = json.loads(runner_path.read_text("utf-8"))
-                logger.info("build: successfully loaded runner config from %s", _short(runner_path))
+                logger.info(
+                    "build: successfully loaded runner config from %s",
+                    _short(runner_path),
+                )
                 logger.debug("build: loaded runner data: %s", runner_data)
                 return runner_data
             except json.JSONDecodeError as e:  # pragma: no cover
-                logger.error("build: failed to decode runner JSON from %s: %s", _short(runner_path), e)
-                raise ManifestResolutionError(f"Invalid runner.json at {runner_path}") from e
+                logger.error(
+                    "build: failed to decode runner JSON from %s: %s",
+                    _short(runner_path),
+                    e,
+                )
+                raise ManifestResolutionError(
+                    f"Invalid runner.json at {runner_path}"
+                ) from e
 
         logger.warning(
             "build: runner.json not found in %s; env prepare may be skipped.",
@@ -602,7 +681,10 @@ class LocalInstaller:
             return {"type": "python", "entry": "server.py", "python": {"venv": ".venv"}}
         if (target / "server.js").exists() or (target / "package.json").exists():
             entry = "server.js" if (target / "server.js").exists() else "index.js"
-            logger.info("runner(infer): found node files, inferring node runner with entry '%s'.", entry)
+            logger.info(
+                "runner(infer): found node files, inferring node runner with entry '%s'.",
+                entry,
+            )
             return {"type": "node", "entry": entry}
         if (
             (target / "pyproject.toml").is_file()

@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Any, Dict
 
 import httpx
+from .tls import VERIFY as _VERIFY
 
 
 def probe_capabilities(
@@ -21,7 +22,7 @@ def probe_capabilities(
         if not (transport and url) or transport not in {"http", "sse"}:
             return manifest
         cap_url = str(url).rstrip("/") + "/capabilities"
-        with httpx.Client(timeout=timeout) as client:
+        with httpx.Client(timeout=timeout, follow_redirects=True, verify=_VERIFY, trust_env=True) as client:
             r = client.get(cap_url)
             if r.status_code == 200:
                 data = r.json()

@@ -7,6 +7,7 @@ from typing import Iterable, Optional
 from urllib.parse import urlsplit
 
 import httpx
+from .tls import VERIFY as _VERIFY
 
 
 class ManifestResolutionError(RuntimeError):
@@ -67,7 +68,7 @@ def resolve_manifest(
     if not _host_allowed(p.hostname or "", allow=allow_hosts, block=block_hosts):
         raise ManifestResolutionError(f"host not allowed: {p.hostname}")
 
-    with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+    with httpx.Client(timeout=timeout, follow_redirects=True, verify=_VERIFY, trust_env=True) as client:
         r = client.get(url)
         if r.status_code >= 400:
             raise ManifestResolutionError(f"http {r.status_code}")

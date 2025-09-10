@@ -29,6 +29,7 @@ from typing import Any, Dict, Optional
 import httpx
 
 from matrix_sdk import MatrixClient, MatrixError
+from .tls import VERIFY as _VERIFY
 
 
 # ---------------------------- helpers ---------------------------- #
@@ -77,7 +78,7 @@ def _load_manifest(url: str, *, timeout: float = 12.0, debug: bool = False) -> D
     If JSON parsing fails, attempts YAML (if PyYAML present). Raises RuntimeError on failure.
     """
     try:
-        with httpx.Client(timeout=timeout, follow_redirects=True) as c:
+        with httpx.Client(timeout=timeout, follow_redirects=True, verify=_VERIFY, trust_env=True) as c:
             r = c.get(url, headers={"Accept": "application/json,*/*"})
     except Exception as e:
         raise RuntimeError(f"Failed to GET manifest: {e}")

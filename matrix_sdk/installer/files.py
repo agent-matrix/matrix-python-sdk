@@ -191,7 +191,9 @@ def materialize_artifacts(plan_or_outcome: Dict[str, Any], target_path: Path) ->
     """
     # Normalize inputs (prefer plan node if present)
     outcome = plan_or_outcome if isinstance(plan_or_outcome, dict) else {}
-    plan = (outcome.get("plan") if isinstance(outcome.get("plan"), dict) else None) or outcome
+    plan = (
+        outcome.get("plan") if isinstance(outcome.get("plan"), dict) else None
+    ) or outcome
 
     artifacts = _collect_artifacts(plan)
 
@@ -299,7 +301,9 @@ def _collect_artifacts_from_manifest_url(
         uid_hint = _extract_uid_from_outcome(outcome)
         src = _pick_manifest_url_from_lockfile(outcome, uid_hint)
         if src:
-            logger.debug("manifest(fetch): using lockfile provenance.source_url: %s", src)
+            logger.debug(
+                "manifest(fetch): using lockfile provenance.source_url: %s", src
+            )
 
     if not src:
         logger.debug(
@@ -405,7 +409,10 @@ def _artifact_from_repository_node(repo: Dict[str, Any]) -> Optional[Dict[str, A
 # Private: deep discovery helpers
 # =============================================================================
 
-def _pick_manifest_url_from_lockfile(outcome: Dict[str, Any], uid_hint: Optional[str] = None) -> str:
+
+def _pick_manifest_url_from_lockfile(
+    outcome: Dict[str, Any], uid_hint: Optional[str] = None
+) -> str:
     """Return provenance.source_url from outcome.lockfile.entities[*] (prefer matching uid)."""
     try:
         lf = outcome.get("lockfile")
@@ -463,64 +470,64 @@ def _extract_uid_from_outcome(outcome: Dict[str, Any]) -> str:
     return ""
 
 
-def _find_manifest_url_anywhere(plan: Dict[str, Any], outcome: Dict[str, Any]) -> str:
-    """Deep-search plan and outcome for a usable manifest URL.
-
-    Priority:
-      1) plan.manifest_url
-      2) plan.source_url
-      3) plan.provenance.source_url
-      4) outcome.manifest_url
-      5) outcome.source_url
-      6) outcome.provenance.source_url
-      7) Any nested dict containing one of the keys above (first found).
-    """
-    # Shallow fast-paths
-    for d in (plan, outcome):
-        if not isinstance(d, dict):
-            continue
-        if isinstance(d.get("manifest_url"), str) and d["manifest_url"].strip():
-            return d["manifest_url"].strip()
-        if isinstance(d.get("source_url"), str) and d["source_url"].strip():
-            return d["source_url"].strip()
-        prov = d.get("provenance") or {}
-        if isinstance(prov, dict):
-            for k in ("manifest_url", "source_url"):
-                v = prov.get(k)
-                if isinstance(v, str) and v.strip():
-                    return v.strip()
-
-    # Deep scan (breadth-first)
-    def _scan(obj: Any) -> Optional[str]:
-        try:
-            if isinstance(obj, dict):
-                # direct keys first
-                for k in ("manifest_url", "source_url"):
-                    v = obj.get(k)
-                    if isinstance(v, str) and v.strip():
-                        return v.strip()
-                # provenance keys
-                prov = obj.get("provenance")
-                if isinstance(prov, dict):
-                    for k in ("manifest_url", "source_url"):
-                        v = prov.get(k)
-                        if isinstance(v, str) and v.strip():
-                            return v.strip()
-                # walk children
-                for v in obj.values():
-                    u = _scan(v)
-                    if u:
-                        return u
-            elif isinstance(obj, list):
-                for it in obj:
-                    u = _scan(it)
-                    if u:
-                        return u
-        except Exception:
-            return None
+def _check_node_for_url(node: Any) -> Optional[str]:
+    """Checks a dictionary for manifest_url or source_url, including its provenance."""
+    if not isinstance(node, dict):
         return None
 
-    return _scan(plan) or _scan(outcome) or ""
+    # Check direct keys first, with priority
+    for key in ("manifest_url", "source_url"):
+        value = node.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+
+    # Check provenance sub-dictionary
+    prov = node.get("provenance")
+    if isinstance(prov, dict):
+        for key in ("manifest_url", "source_url"):
+            value = prov.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return None
+
+
+def _find_manifest_url_anywhere(plan: Dict[str, Any], outcome: Dict[str, Any]) -> str:
+    """Deep-search plan and outcome for a usable manifest URL (iterative BFS)."""
+    # A queue for breadth-first search, starting with the top-level objects.
+    # The order [plan, outcome] preserves the search priority.
+    queue: List[Any] = [plan, outcome]
+    # Keep track of object ids we've already visited to avoid infinite loops
+    visited = {id(plan), id(outcome)}
+
+    # Initial check on top-level objects before deep scan
+    for top_level_obj in (plan, outcome):
+        url = _check_node_for_url(top_level_obj)
+        if url:
+            return url
+
+    while queue:
+        current_obj = queue.pop(0)
+
+        if isinstance(current_obj, dict):
+            # Add dictionary values to the queue for the next level of search
+            for value in current_obj.values():
+                if isinstance(value, (dict, list)) and id(value) not in visited:
+                    url = _check_node_for_url(value)
+                    if url:
+                        return url
+                    queue.append(value)
+                    visited.add(id(value))
+        elif isinstance(current_obj, list):
+            # Add list items to the queue
+            for item in current_obj:
+                if isinstance(item, (dict, list)) and id(item) not in visited:
+                    url = _check_node_for_url(item)
+                    if url:
+                        return url
+                    queue.append(item)
+                    visited.add(id(item))
+
+    return ""
 
 
 # =============================================================================

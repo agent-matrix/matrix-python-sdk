@@ -15,6 +15,7 @@ from typing import Any, Dict, Iterator, List, Optional
 import httpx
 
 from .policy import default_port
+from .tls import VERIFY as _VERIFY
 
 # --------------------------------------------------------------------------------------
 # Module Setup
@@ -312,14 +313,14 @@ def doctor(alias: str, timeout: int = 5) -> Dict[str, Any]:
         url = lock_info.url
         # Connector: quick probe that won't hang on SSE
         try:
-            with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+            with httpx.Client(timeout=timeout, follow_redirects=True, verify=_VERIFY, trust_env=True) as client:
                 # Try a HEAD first (fast, common)
                 resp = client.head(url, headers={"Accept": "text/event-stream"})
                 code = resp.status_code
         except httpx.RequestError:
             # Some SSE servers don't support HEAD; use a streamed GET
             try:
-                with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+                with httpx.Client(timeout=timeout, follow_redirects=True, verify=_VERIFY, trust_env=True) as client:
                     with client.stream(
                         "GET", url, headers={"Accept": "text/event-stream"}
                     ) as resp:

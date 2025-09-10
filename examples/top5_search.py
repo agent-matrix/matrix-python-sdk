@@ -27,6 +27,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import httpx
 
 from matrix_sdk import MatrixClient, MatrixError
+from .tls import VERIFY as _VERIFY
 
 
 def _to_dict(obj: Any) -> Dict[str, Any]:
@@ -86,7 +87,7 @@ def _probe_url(url: str, *, timeout: float = 4.0) -> str:
     Never raises; intended for diagnostics only.
     """
     try:
-        with httpx.Client(timeout=timeout, follow_redirects=True) as c:
+        with httpx.Client(timeout=timeout, follow_redirects=True,verify=_VERIFY, trust_env=True) as c:
             # Try HEAD first, fall back to GET if method not allowed
             r = c.head(url, headers={"Accept": "application/json,*/*"})
             if r.status_code in (405, 501):
