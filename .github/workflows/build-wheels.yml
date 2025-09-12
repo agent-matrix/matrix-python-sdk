@@ -78,12 +78,13 @@ jobs:
           path: dist/
 
       - name: Install from wheel
+        # FIX: Use bash shell on all OS for consistent wildcard expansion
+        shell: bash
         run: python -m pip install dist/*.whl
 
-      # Use distribution metadata instead of module __version__
       - name: Run smoke test
         run: |
-          python -c "import importlib.metadata as im, matrix_sdk; print('Import OK, version:', im.version('matrix-python-sdk'))"
+          python -c "import importlib.metadata as im; print('Import OK, version:', im.version('matrix-python-sdk'))"
 
   # ------------------------------------------------------------------
   # Optional: Create a GitHub Release when a new version tag is pushed
