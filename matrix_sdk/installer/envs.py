@@ -25,10 +25,11 @@ from __future__ import annotations
 import inspect
 import logging
 import os
+import shutil
 import subprocess
-import venv
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from venv import EnvBuilder
 
 # ---------------------------------------------------------------------------
 # Centralized logger / helpers (with safe fallback during migration)
@@ -144,32 +145,58 @@ def prepare_node_env(
 # =============================================================================
 
 
+def _safe_link_or_copy(src: Path, dst: Path) -> None:
+    """Try to symlink; if not supported/permitted (Windows), copy instead.
+
+    NOTE: This helper is provided for any future cases where explicit linking of
+    binaries is needed. The current venv creation path uses EnvBuilder and
+    avoids explicit symlinking on Windows by default.
+    """
+    try:
+        if dst.exists() or dst.is_symlink():
+            try:
+                dst.unlink()
+            except Exception:
+                pass
+        os.symlink(str(src), str(dst))  # may fail on Windows
+    except Exception:
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(str(src), str(dst))
+
+
 def _create_and_upgrade_venv(venv_path: Path, target_path: Path, timeout: int) -> str:
     """Create a fresh venv and upgrade pip/setuptools/wheel.
 
-    Preserves Windows symlink fallback semantics.
-    Returns python binary path as string.
+    Preserves Windows symlink fallback semantics and allows opt-in via
+    MATRIX_SYMLINKS=1. Returns python binary path as string.
     """
     logger.info("env(python): creating venv → %s", _short(venv_path))
+
+    # Prefer copies on Windows unless explicitly overridden. On POSIX, default to symlinks.
+    use_symlinks = _env_bool("MATRIX_SYMLINKS", default=(os.name != "nt"))
     try:
-        venv.create(
-            venv_path,
+        EnvBuilder(
             with_pip=True,
             clear=True,
-            symlinks=True,
+            symlinks=use_symlinks,
             system_site_packages=False,
-        )
+        ).create(str(venv_path))
     except Exception as e:
-        logger.warning(
-            "env(python): symlinked venv failed (%s); retry without symlinks.", e
-        )
-        venv.create(
-            venv_path,
-            with_pip=True,
-            clear=True,
-            symlinks=False,
-            system_site_packages=False,
-        )
+        if use_symlinks:
+            logger.warning(
+                "env(python): venv create with symlinks=%s failed (%s); retry without symlinks.",
+                use_symlinks,
+                e,
+            )
+            EnvBuilder(
+                with_pip=True,
+                clear=True,
+                symlinks=False,
+                system_site_packages=False,
+            ).create(str(venv_path))
+        else:
+            # Already without symlinks; re-raise to surface genuine failures
+            raise
 
     pybin = _python_bin(venv_path)
     logger.debug("env(python): python executable at %s", pybin)

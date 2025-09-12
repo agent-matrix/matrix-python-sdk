@@ -111,6 +111,44 @@ def _find_available_port(start_port: int, max_retries: int = 100) -> int:
     )
 
 
+def _pid_alive(pid: int) -> bool:
+    """Cross-platform process existence check.
+
+    POSIX: uses signal 0 via os.kill.
+    Windows: uses OpenProcess + GetExitCodeProcess (STILL_ACTIVE == 259).
+    """
+    if pid is None or pid <= 0:
+        return False
+    if os.name == "nt":
+        try:
+            import ctypes  # lazy import to avoid overhead elsewhere
+
+            kernel32 = ctypes.windll.kernel32
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            handle = kernel32.OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid)
+            )
+            if not handle:
+                return False
+            try:
+                code = ctypes.c_ulong()
+                if kernel32.GetExitCodeProcess(handle, ctypes.byref(code)) == 0:
+                    return False
+                STILL_ACTIVE = 259
+                return code.value == STILL_ACTIVE
+            finally:
+                kernel32.CloseHandle(handle)
+        except Exception:
+            # If anything goes wrong, be conservative.
+            return False
+    # POSIX
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except OSError:
+        return False
+
+
 def _get_python_executable(target_path: Path, runner_data: Dict[str, Any]) -> str:
     """Determines the absolute path to the venv Python, failing if not found."""
     venv_dir = runner_data.get("python", {}).get("venv", ".venv")
@@ -269,15 +307,18 @@ def status() -> List[LockInfo]:
     for lock_file in STATE_DIR.glob("*/runner.lock.json"):
         alias = lock_file.parent.name
         if lock_info := _load_lock_info(alias):
-            try:
-                if lock_info.pid and lock_info.pid > 0:
-                    os.kill(lock_info.pid, 0)  # Check if process exists
+            if lock_info.pid and lock_info.pid > 0:
+                if _pid_alive(lock_info.pid):
+                    running_processes.append(lock_info)
+                else:
+                    logger.warning(
+                        "runtime: removing stale lock file for dead process: %s",
+                        lock_file,
+                    )
+                    lock_file.unlink(missing_ok=True)
+            else:
+                # Connector entry (pid <= 0): always include
                 running_processes.append(lock_info)
-            except ProcessLookupError:
-                logger.warning(
-                    "runtime: removing stale lock file for dead process: %s", lock_file
-                )
-                lock_file.unlink(missing_ok=True)
     return running_processes
 
 
@@ -339,7 +380,8 @@ def doctor(alias: str, timeout: int = 5) -> Dict[str, Any]:
 
     # Local process
     try:
-        os.kill(lock_info.pid, 0)  # Check if process is alive
+        if not _pid_alive(lock_info.pid):
+            return {"status": "fail", "reason": f"Process {lock_info.pid} not found."}
         if not lock_info.port:
             return {
                 "status": "ok",
@@ -355,8 +397,6 @@ def doctor(alias: str, timeout: int = 5) -> Dict[str, Any]:
                 "status": "ok",
                 "reason": f"Responded {response.status_code} from {url}",
             }
-    except ProcessLookupError:
-        return {"status": "fail", "reason": f"Process {lock_info.pid} not found."}
     except httpx.RequestError as e:
         return {
             "status": "fail",
