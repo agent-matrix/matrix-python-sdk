@@ -1,10 +1,13 @@
 # SPDX-License-Identifier: MIT
 # tests/test_installer.py
 from __future__ import annotations
+
 import base64
 import json
 from pathlib import Path
+
 import pytest
+
 # Public facade stays the same after the refactor
 from matrix_sdk.installer import (
     BuildReport,
@@ -12,7 +15,6 @@ from matrix_sdk.installer import (
     _ensure_sse_url,
     _is_valid_runner_schema,
 )
-from matrix_sdk.manifest import ManifestResolutionError
 
 
 class _DummyClient:
@@ -274,4 +276,3 @@ def test_shallow_search_log_format_no_stray_percent(tmp_path, caplog_debug):
     assert not any(
         "%s" in rec.getMessage() for rec in caplog_debug.records
     ), "Found an unformatted '%s' in runner_discovery logs"
-
