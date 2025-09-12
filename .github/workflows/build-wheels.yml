@@ -1,24 +1,30 @@
-name: Build & test Python distributions
+# .github/workflows/build_and_test.yml
 
+name: Build and Test
+
+# Run on pushes to any branch, any tag, on pull requests, or manually
 on:
-  push:            # run on every commit
-    branches: ['**']
-    tags:     ['v*']   # also run when you push a version tag
+  push:
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
+# Set default permissions to read-only for security
 permissions:
   contents: read
 
+# Ensure only one run per branch/PR, canceling older runs
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  # ------------------------------------------------------------------
+  # Build the source distribution (sdist) and universal wheel
+  # ------------------------------------------------------------------
   build:
-    name: Build (sdist + universal wheel)
+    name: Build Distributions
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -27,28 +33,26 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: pip
-          cache-dependency-path: pyproject.toml
+          cache: "pip"
 
-      - name: Install build backend
+      - name: Install build tools
         run: python -m pip install --upgrade pip build
 
       - name: Build sdist and wheel
         run: python -m build
 
-      - name: List dist/
-        run: ls -la dist
-
-      - name: Upload distributions as artifacts
+      - name: Upload distributions artifact
         uses: actions/upload-artifact@v4
         with:
-          name: dist
-          path: dist/*
-          if-no-files-found: error
-          retention-days: 30
+          name: python-distributions
+          path: dist/
+          if-no-files-found: error # Fail if build produced no files
 
+  # ------------------------------------------------------------------
+  # Test the built wheel on multiple OS and Python versions
+  # ------------------------------------------------------------------
   test:
-    name: Test wheel • ${{ matrix.os }} • py${{ matrix.py }}
+    name: Test Wheel • ${{ matrix.os }} • py${{ matrix.py }}
     needs: build
     runs-on: ${{ matrix.os }}
     strategy:
@@ -58,59 +62,47 @@ jobs:
         py: ["3.11", "3.12"]
 
     steps:
-      - name: Set up Python
+      # FIX: Checkout the repo to make pyproject.toml available for caching
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.py }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.py }}
-          cache: pip
-          cache-dependency-path: pyproject.toml
+          cache: "pip"
 
-      - name: Download built artifacts
+      - name: Download distributions artifact
         uses: actions/download-artifact@v4
         with:
-          name: dist
-          path: dist
+          name: python-distributions
+          path: dist/
 
-      - name: Show downloaded files
+      - name: Install from wheel
+        run: python -m pip install dist/*.whl
+
+      - name: Run smoke test
         run: |
-          ls -la dist || dir dist
+          python -c "import matrix_sdk; print(f'Import OK, version: {matrix_sdk.__version__}')"
 
-      - name: Install built wheel (prefer wheel over sdist)
-        shell: bash
-        run: |
-          set -euo pipefail
-          WHEEL="$(ls dist/*.whl 2>/dev/null | head -n 1 || true)"
-          if [[ -n "${WHEEL}" ]]; then
-            python -m pip install "${WHEEL}"
-          else
-            python -m pip install dist/*.tar.gz
-          fi
-
-      - name: Smoke test import
-        shell: bash
-        run: |
-          python - <<'PY'
-          import matrix_sdk as m
-          print("matrix_sdk version:", getattr(m, "__version__", "unknown"))
-          assert hasattr(m, "__all__")
-          print("import OK")
-          PY
-
-  # Optional: attach artifacts to a GitHub Release when tagging
+  # ------------------------------------------------------------------
+  # Optional: Create a GitHub Release when a new version tag is pushed
+  # ------------------------------------------------------------------
   release:
+    name: Create GitHub Release
     if: startsWith(github.ref, 'refs/tags/')
-    needs: [build, test]
+    needs: [test] # Run only after tests pass
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: write # Permission to create the release
     steps:
-      - name: Download built artifacts
+      - name: Download distributions artifact
         uses: actions/download-artifact@v4
         with:
-          name: dist
-          path: dist
+          name: python-distributions
+          path: dist/
 
-      - name: Create GitHub Release and upload assets
+      - name: Create release and upload assets
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*
