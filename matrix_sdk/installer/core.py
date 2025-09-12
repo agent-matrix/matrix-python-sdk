@@ -27,7 +27,7 @@ import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from ..client import MatrixClient
 from ..manifest import ManifestResolutionError
@@ -186,9 +186,15 @@ class LocalInstaller:
         from .files import materialize_files as _materialize_files
         from .runner_discovery import materialize_runner as _materialize_runner
 
-        files_written = _materialize_files(outcome, target_path)
+        # --- NEW: High-signal logging about artifacts/repositories before fetch ---
         plan_node = outcome.get("plan") or outcome
-        artifacts_fetched = _materialize_artifacts(plan_node, target_path)
+        self._log_plan_artifact_intent(plan_node)
+
+        files_written = _materialize_files(outcome, target_path)
+
+        # Artifact fetching (this is where git clone happens when artifacts exist
+        # or when files.materialize_artifacts synthesizes git artifacts from the manifest).
+        artifacts_fetched = _materialize_artifacts(outcome, target_path)
 
         # Orchestration → discovery; support both new/old signatures for safety.
         try:
@@ -365,6 +371,135 @@ class LocalInstaller:
             _short(runner_path.parent),
         )
         return {}
+
+    # --- NEW: concentrated logging helper for artifact/repo intent -----------
+    def _log_plan_artifact_intent(self, plan_node: Dict[str, Any]) -> None:
+        """Log what's in the plan that influences artifact fetching (clone)."""
+        try:
+            artifacts = plan_node.get("artifacts")
+            kinds: List[str] = []
+            if isinstance(artifacts, list):
+                for a in artifacts:
+                    if isinstance(a, dict):
+                        k = (a.get("kind") or ("url" if a.get("url") else "-")).lower()
+                        kinds.append(k)
+            logger.info(
+                "materialize(artifacts): plan reports %d artifact(s)%s",
+                len(artifacts) if isinstance(artifacts, list) else 0,
+                f" kinds={kinds}" if kinds else "",
+            )
+
+            # If the plan declares no artifacts, surface repository hints that
+            # files.materialize_artifacts may use to synthesize git artifacts.
+            if not isinstance(artifacts, list) or not artifacts:
+                repo_cands = self._scan_repo_candidates(plan_node)
+                prov_urls = self._scan_manifest_provenance_urls(plan_node)
+                if repo_cands:
+                    logger.info(
+                        "materialize(artifacts): no artifacts declared; "
+                        "found %d repository candidate(s) in plan/embedded manifest. "
+                        "The SDK will attempt to synthesize git artifacts from these.",
+                        len(repo_cands),
+                    )
+                    logger.debug(
+                        "materialize(artifacts): repo candidates = %s", repo_cands
+                    )
+                else:
+                    logger.info(
+                        "materialize(artifacts): no artifacts declared and no repository "
+                        "candidates embedded. If a provenance/manifest URL exists, the SDK "
+                        "may fetch it to discover repositories."
+                    )
+                if prov_urls:
+                    logger.debug(
+                        "materialize(artifacts): provenance/manifest URL candidates = %s",
+                        prov_urls,
+                    )
+        except Exception as e:  # defensive: never fail build on logging
+            logger.debug("artifact-intent logging skipped due to: %s", e)
+
+    @staticmethod
+    def _scan_repo_candidates(  # noqa: C901
+        container: Dict[str, Any],
+    ) -> List[Tuple[str, Optional[str]]]:
+        """Best-effort scan for repository declarations in a plan/manifest."""
+        out: List[Tuple[str, Optional[str]]] = []
+
+        def _add(url: Optional[str], ref: Optional[str]) -> None:
+            if not url:
+                return
+            u = url.strip()
+            if not u:
+                return
+            r = ref.strip() if isinstance(ref, str) and ref.strip() else None
+            out.append((u, r))
+
+        def _extract(node: Dict[str, Any]) -> None:
+            if not isinstance(node, dict):
+                return
+            rep = node.get("repository")
+            if isinstance(rep, str):
+                _add(rep, None)
+            elif isinstance(rep, dict):
+                _add(rep.get("url"), rep.get("ref"))
+            reps = node.get("repositories")
+            if isinstance(reps, list):
+                for r in reps:
+                    if isinstance(r, str):
+                        _add(r, None)
+                    elif isinstance(r, dict):
+                        _add(r.get("url"), r.get("ref"))
+
+        _extract(container)
+        for k in ("manifest", "source_manifest", "echo_manifest", "input_manifest"):
+            v = container.get(k)
+            if isinstance(v, dict):
+                _extract(v)
+
+        # stable de-dup
+        seen: set[Tuple[str, Optional[str]]] = set()
+        dedup: List[Tuple[str, Optional[str]]] = []
+        for t in out:
+            if t not in seen:
+                seen.add(t)
+                dedup.append(t)
+        return dedup
+
+    @staticmethod
+    def _scan_manifest_provenance_urls(container: Dict[str, Any]) -> List[str]:
+        """Collect provenance/manifest URLs that may be used to fetch a manifest."""
+        urls: List[str] = []
+
+        def _add(v: Optional[str]) -> None:
+            v = (v or "").strip()
+            if v:
+                urls.append(v)
+
+        _add(container.get("manifest_url"))
+        prov = container.get("provenance") or {}
+        if isinstance(prov, dict):
+            _add(prov.get("manifest_url"))
+            _add(prov.get("source_url"))
+
+        lf = container.get("lockfile") or {}
+        ents = lf.get("entities") or []
+        if isinstance(ents, list):
+            for ent in ents:
+                if not isinstance(ent, dict):
+                    continue
+                p = ent.get("provenance") or {}
+                if isinstance(p, dict):
+                    _add(p.get("source_url"))
+                    _add(p.get("manifest_url"))
+
+        # stable de-dup
+        out: List[str] = []
+        seen: set[str] = set()
+        for u in urls:
+            if u not in seen:
+                seen.add(u)
+                out.append(u)
+        return out
 
     # NOTE: Keep this inference helper for compatibility; the discovery pipeline
     # may call back into it. In future, inference can live fully in runner_discovery.

@@ -1,3 +1,4 @@
+# matrix_sdk/installer/runner_discovery.py
 # SPDX-License-Identifier: MIT
 """Runner discovery strategies (well-logged, cross-platform, production-grade).
 
@@ -27,6 +28,7 @@ import io
 import json
 import logging
 import os
+import ssl  # NEW: needed for hardened TLS context
 import tempfile
 import urllib.request
 from pathlib import Path
@@ -117,7 +119,8 @@ def materialize_runner(outcome: Dict[str, Any], target_path: Path) -> Optional[s
         _try_fetch_runner_from_manifest_url,  # 7) synthesize via manifest URL
         _try_infer_runner_from_structure,  # 8) infer from files
         _try_synthesize_connector_runner,  # 9) from any embedded URL hint
-        _write_min_connector_if_any_url_hint,  # 10) last-ditch minimal connector
+        _try_connector_from_mcp_registration,  # 10) explicit mcp_registration URL
+        _write_min_connector_if_any_url_hint,  # 11) last-ditch minimal connector
     ]
 
     for strat in strategies:
@@ -172,6 +175,7 @@ def _try_fetch_runner_from_url(
         return None
 
     resolved = _resolve_url_with_base(runner_url, outcome, plan_node)
+    resolved = _normalize_manifest_like_url(resolved)  # normalize gh blob/refs forms
     logger.info("runner(url): fetching runner.json from %s", resolved)
     try:
         data = _http_get_text(resolved, timeout=HTTP_TIMEOUT)
@@ -325,6 +329,55 @@ def _try_find_runner_via_shallow_search(
     return None
 
 
+# -------------------- PATCH: use multiple manifest URL sources ----------------
+
+
+def _iter_manifest_urls(
+    plan_node: Dict[str, Any], outcome: Dict[str, Any]
+) -> list[str]:
+    """Collect candidate manifest URLs from plan/outcome + lockfile (de-duplicated)."""
+    cand: list[str] = []
+
+    def _add(v: Optional[str]) -> None:
+        v = (v or "").strip()
+        if v:
+            cand.append(v)
+
+    # Plan-level hints
+    _add(plan_node.get("manifest_url"))
+    prov = plan_node.get("provenance") or {}
+    if isinstance(prov, dict):
+        _add(prov.get("manifest_url"))
+        _add(prov.get("source_url"))
+
+    # Outcome-level hints
+    _add(outcome.get("manifest_url"))
+    prov2 = outcome.get("provenance") or {}
+    if isinstance(prov2, dict):
+        _add(prov2.get("manifest_url"))
+        _add(prov2.get("source_url"))
+
+    # Lockfile provenance (typical in your failing case)
+    lf = outcome.get("lockfile") or {}
+    ents = lf.get("entities") or []
+    if isinstance(ents, list):
+        for ent in ents:
+            if not isinstance(ent, dict):
+                continue
+            p = ent.get("provenance") or {}
+            if isinstance(p, dict):
+                _add(p.get("source_url") or p.get("manifest_url"))
+
+    # stable order de-dupe
+    seen: set[str] = set()
+    out: list[str] = []
+    for u in cand:
+        if u not in seen:
+            seen.add(u)
+            out.append(u)
+    return out
+
+
 def _try_fetch_runner_from_manifest_url(
     plan_node: Dict[str, Any], target: Path, outcome: Dict[str, Any]
 ) -> Optional[str]:
@@ -332,35 +385,36 @@ def _try_fetch_runner_from_manifest_url(
         logger.debug("runner(manifest_url): disabled by env var.")
         return None
 
-    src = (
-        plan_node.get("manifest_url")
-        or (plan_node.get("provenance") or {}).get("source_url")
-        or (outcome.get("provenance") or {}).get("source_url")
-        or ""
-    )
-    src = str(src or "").strip()
-    if not src:
+    # iterate through all possible sources, including lockfile provenance
+    candidates = _iter_manifest_urls(plan_node, outcome)
+    if not candidates:
         return None
 
-    resolved = _resolve_url_with_base(src, outcome, plan_node)
-    if not _host_allowed(resolved):
-        logger.debug("runner(manifest_url): host not allowed: %s", resolved)
-        return None
+    for src in candidates:
+        resolved = _resolve_url_with_base(src, outcome, plan_node)
+        resolved = _normalize_manifest_like_url(resolved)  # normalize common gh forms
+        if not _host_allowed(resolved):
+            logger.debug("runner(manifest_url): host not allowed: %s", resolved)
+            continue
 
-    logger.debug("runner(manifest_url): fetching manifest from %s", resolved)
-    try:
-        data = _http_get_text(resolved, timeout=HTTP_TIMEOUT)
-        manifest = json.loads(data)
-        if url := _url_from_manifest(manifest):
-            rp = target / "runner.json"
-            _write_json_atomic(rp, _make_connector_runner(url))
-            logger.info(
-                "runner(manifest_url): synthesized connector from manifest → %s",
-                _short(rp),
+        logger.debug("runner(manifest_url): fetching manifest from %s", resolved)
+        try:
+            data = _http_get_text(resolved, timeout=HTTP_TIMEOUT)
+            manifest = json.loads(data)
+            if url := _url_from_manifest(manifest):
+                rp = target / "runner.json"
+                _write_json_atomic(rp, _make_connector_runner(url))
+                logger.info(
+                    "runner(manifest_url): synthesized connector from manifest → %s",
+                    _short(rp),
+                )
+                return str(rp)
+        except Exception as e:
+            logger.debug(
+                "runner(manifest_url): fetch/synthesis failed for %s: %s", resolved, e
             )
-            return str(rp)
-    except Exception as e:
-        logger.debug("runner(manifest_url): fetch/synthesis failed: %s", e)
+            continue
+
     return None
 
 
@@ -460,6 +514,40 @@ def _try_synthesize_connector_runner(
         _write_json_atomic(rp, obj)
         logger.info(
             "runner(synth): synthesized connector from embedded URL → %s", _short(rp)
+        )
+        return str(rp)
+    return None
+
+
+def _try_connector_from_mcp_registration(
+    plan_node: Dict[str, Any], target: Path, outcome: Dict[str, Any]
+) -> Optional[str]:
+    """If plan/outcome contains an MCP registration with a server URL, synthesize
+    a connector runner directly (useful when the Hub plan didn’t include artifacts
+    and the manifest fetch fails or is disabled)."""
+    if not _connector_enabled():
+        return None
+
+    def _extract(node: Dict[str, Any]) -> Optional[str]:
+        reg = isinstance(node, dict) and node.get("mcp_registration")
+        if not isinstance(reg, dict):
+            return None
+        srv = reg.get("server")
+        if not isinstance(srv, dict):
+            return None
+        return (srv.get("url") or srv.get("endpoint") or "").strip() or None
+
+    url = _extract(plan_node) or _extract(outcome)
+    if not url:
+        return None
+
+    obj = _make_connector_runner(url)
+    if _is_valid_runner_schema(obj, logger):
+        rp = target / "runner.json"
+        _write_json_atomic(rp, obj)
+        logger.info(
+            "runner(mcp_registration): synthesized connector from mcp_registration.server.url → %s",
+            _short(rp),
         )
         return str(rp)
     return None
@@ -612,22 +700,70 @@ def _find_runner_file_shallow(root: Path, name: str, max_depth: int) -> Optional
                 )
                 continue
 
-    # ✅ Fixed: include 'name' in the log args
     logger.debug("Shallow search for '%s' finished, no file found.", name)
     return None
 
 
+# -------------------- Hardened network helpers -------------------------------
+
+
+def _ssl_ctx() -> ssl.SSLContext:
+    """Return an SSL context that prefers OS trust (truststore) and falls back to certifi."""
+    try:
+        import truststore  # type: ignore
+
+        return truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    except Exception:
+        ctx = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
+        try:
+            import certifi  # type: ignore
+
+            ctx.load_verify_locations(cafile=certifi.where())
+        except Exception:
+            pass
+        return ctx
+
+
+def _normalize_manifest_like_url(src: str) -> str:
+    """Normalize common GitHub URL shapes so raw content downloads work.
+
+    - github.com/<org>/<repo>/blob/<branch>/path  →
+      raw.githubusercontent.com/<org>/<repo>/<branch>/path
+
+    - raw.githubusercontent.com/.../refs/heads/<branch>/path  →
+      raw.githubusercontent.com/.../<branch>/path
+    """
+    s = (src or "").strip()
+    if not s:
+        return s
+    # github blob → raw
+    if "://github.com/" in s and "/blob/" in s:
+        try:
+            parts = s.split("://github.com/", 1)[1]
+            owner_repo, _, rest = parts.partition("/blob/")
+            return f"https://raw.githubusercontent.com/{owner_repo}/{rest}"
+        except Exception:
+            return s
+    # raw refs/heads -> branch
+    if "://raw.githubusercontent.com/" in s and "/refs/heads/" in s:
+        return s.replace("/refs/heads/", "/")
+    return s
+
+
 def _http_get_text(url: str, *, timeout: int) -> str:
-    """HTTP GET helper with sensible headers and strict timeout."""
+    """HTTP GET helper with sensible headers and strict timeout (hardened TLS)."""
     req = urllib.request.Request(
-        url,
+        _normalize_manifest_like_url(url),  # normalize before fetch
         headers={
             "Accept": "application/json, */*;q=0.1",
             "User-Agent": "matrix-sdk-installer/1",
         },
         method="GET",
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    # Use hardened TLS context (truststore/certifi) to avoid macOS corporate CA issues.
+    with urllib.request.urlopen(
+        req, timeout=timeout, context=_ssl_ctx()
+    ) as resp:  # nosec - controlled domains
         # honor declared encoding when available; else UTF-8
         ct = resp.headers.get("Content-Type", "")
         charset = "utf-8"
@@ -666,8 +802,6 @@ def _write_json_atomic(path: Path, obj: Dict[str, Any]) -> None:
         # If something failed before replace, clean up temp file
         try:
             if tmp_path and tmp_path.exists():
-                tmp_path.unlink(
-                    missing_ok=True
-                )  # Py3.8+: missing_ok ignored gracefully
+                tmp_path.unlink(missing_ok=True)
         except Exception:
             pass
