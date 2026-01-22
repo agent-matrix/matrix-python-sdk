@@ -90,12 +90,25 @@ res = search(hub, "chat with PDFs", type="agent",
 print(res.total, [i.id for i in res.items])
 ```
 
+### Auth note (important for production)
+
+Matrix Hub typically exposes **read-only** endpoints publicly (search/entity/manifest),
+but protects **admin/operator** endpoints (install/remotes/ingest) behind a Bearer token.
+
+Set:
+
+```bash
+export MATRIX_HUB_TOKEN="...operator token..."
+```
+
+The SDK will auto-read `MATRIX_HUB_TOKEN` (or `MATRIX_TOKEN`) from environment if no token is passed explicitly.
+
 ### 2) Install
 
 ```python
 from matrix_sdk.client import MatrixClient
 
-hub = MatrixClient("https://api.matrixhub.io")
+hub = MatrixClient("https://api.matrixhub.io")  # reads MATRIX_HUB_TOKEN automatically if set
 
 hub.install(
     id="mcp_server:hello-sse-server@0.1.0",

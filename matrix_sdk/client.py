@@ -150,6 +150,16 @@ class MatrixClient:
         self.timeout = timeout
         self.cache = cache
 
+        # Non-breaking convenience: if token is not provided explicitly,
+        # try common environment variables used by CLI/operators.
+        # This keeps SDK compatible when Matrix Hub locks down admin endpoints.
+        if not token:
+            token = (
+                os.getenv("MATRIX_HUB_TOKEN")
+                or os.getenv("MATRIX_TOKEN")
+                or None
+            )
+
         self._headers: Dict[str, str] = {
             "Accept": "application/json",
             "User-Agent": user_agent or "matrix-python-sdk/0.1 (+python-httpx)",
@@ -505,9 +515,16 @@ class MatrixClient:
                 body: Any = resp.json()
             except json.JSONDecodeError:
                 body = resp.text
+
+            hint = ""
+            if resp.status_code in (401, 403):
+                hint = (
+                    " (auth required: set MATRIX_HUB_TOKEN or pass token=... "
+                    "for operator/admin endpoints like install/remotes/ingest)"
+                )
             raise MatrixError(
                 resp.status_code,
-                f"{method} {path} failed ({resp.status_code}) — {body!r}",
+                f"{method} {path} failed ({resp.status_code}) — {body!r}{hint}",
             )
         return resp
 
