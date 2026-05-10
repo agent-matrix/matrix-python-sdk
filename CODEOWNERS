@@ -1,0 +1,6 @@
+# Default owners for everything in the repo.
+# These users / teams are the default reviewers for all pull requests.
+#
+# See: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-security/customizing-your-repository/about-code-owners
+
+*       @agent-matrix/maintainers

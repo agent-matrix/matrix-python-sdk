@@ -1,0 +1,23 @@
+# Normalize line endings to LF in the repository.
+* text=auto eol=lf
+
+# Treat known binary types explicitly so diffs and merges behave correctly.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.pdf  binary
+*.zip  binary
+*.tar  binary
+*.tar.gz binary
+*.tgz  binary
+*.gz   binary
+*.7z   binary
+*.woff binary
+*.woff2 binary
+*.ttf  binary
+*.eot  binary
+*.mp3  binary
+*.mp4  binary
+*.webm binary
