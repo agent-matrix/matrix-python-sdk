@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation
+    url: https://github.com/agent-matrix
+    about: Browse Agent-Matrix repositories and documentation.
+  - name: Security advisory
+    url: https://docs.github.com/en/code-security/security-advisories
+    about: Please report security issues privately. See SECURITY.md.

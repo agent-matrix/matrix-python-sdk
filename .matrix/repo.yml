@@ -1,0 +1,18 @@
+schema_version: "0.1"
+repo:
+  owner: "agent-matrix"
+  name: "matrix-python-sdk"
+  full_name: "agent-matrix/matrix-python-sdk"
+  role: "sdk"
+alive: { participates: true, contracts_version: "0.2" }
+maintenance:
+  maintainer: "matrix-maintainer"
+  repair_enabled: true
+  repair_constraints: [pr_only, run_tests]
+governance:
+  risk_level: low
+  requires_approval: false
+  approver: "matrix-guardian"
+economics: { budget_aware: false, reporter: "matrix-treasury" }
+events: { emitted: [], consumed: [] }
+health: { type: "command", endpoint: "", command: "python -c 'import matrix_sdk'" }
