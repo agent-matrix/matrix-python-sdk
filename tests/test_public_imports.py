@@ -16,6 +16,7 @@ importable. Run as normal pytest (source tree) AND, crucially, against the
 regression that drops the `installer` subpackage fails the build instead of
 shipping.
 """
+
 from __future__ import annotations
 
 import importlib
@@ -28,7 +29,7 @@ REQUIRED_MODULES = [
     "matrix_sdk.client",
     "matrix_sdk.alias",
     "matrix_sdk.ids",
-    "matrix_sdk.installer",       # must be a PACKAGE, not a flat module
+    "matrix_sdk.installer",  # must be a PACKAGE, not a flat module
     "matrix_sdk.installer.core",  # the file that went missing in the bad build
 ]
 
@@ -50,12 +51,13 @@ def test_installer_is_a_package() -> None:
 
 def test_matrix_cli_install_import_surface() -> None:
     """The exact symbols matrix_cli/commands/install.py imports at runtime."""
-    from matrix_sdk.installer import LocalInstaller  # noqa: F401
-    from matrix_sdk.installer.core import (  # noqa: F401
-        BuildReport,
-        BuildResult,
-        EnvReport,
-        LocalInstaller as CoreLocalInstaller,
-    )
+    import matrix_sdk.installer as installer_pkg
+    import matrix_sdk.installer.core as installer_core
 
-    assert LocalInstaller is CoreLocalInstaller
+    # `from matrix_sdk.installer import LocalInstaller` must resolve to the same
+    # object defined in core (the package facade re-exports it).
+    assert installer_pkg.LocalInstaller is installer_core.LocalInstaller
+
+    # The Build*/Env* dataclasses must be importable from core.
+    for name in ("BuildReport", "BuildResult", "EnvReport", "LocalInstaller"):
+        assert isinstance(getattr(installer_core, name), type)
