@@ -85,6 +85,32 @@ jobs:
         run: |
           python -c "import importlib.metadata as im; print('Import OK, version:', im.version('matrix-python-sdk'))"
 
+      # Import the public surface that downstream code (matrix-cli) relies on,
+      # from the INSTALLED WHEEL. This catches packaging regressions that drop a
+      # subpackage — e.g. the bad build where matrix_sdk.installer shipped as a
+      # flat module and `matrix_sdk.installer.core` could not be imported.
+      - name: Verify public import surface (packaging guard)
+        shell: bash
+        run: |
+          python - <<'PY'
+          import importlib
+          for m in (
+              "matrix_sdk",
+              "matrix_sdk.client",
+              "matrix_sdk.alias",
+              "matrix_sdk.ids",
+              "matrix_sdk.installer",
+              "matrix_sdk.installer.core",
+          ):
+              importlib.import_module(m)
+              print("ok import", m)
+          pkg = importlib.import_module("matrix_sdk.installer")
+          assert hasattr(pkg, "__path__"), "matrix_sdk.installer must be a package, not a flat module"
+          from matrix_sdk.installer import LocalInstaller
+          from matrix_sdk.installer.core import BuildReport, BuildResult, EnvReport
+          print("public import surface OK")
+          PY
+
   # ------------------------------------------------------------------
   # Create a GitHub Release when a new version tag is pushed
   # ------------------------------------------------------------------
